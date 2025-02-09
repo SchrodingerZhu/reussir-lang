@@ -7,7 +7,7 @@ use chumsky::{IterParser, Parser};
 
 use crate::print_parse_errors;
 use crate::syntax::concrete::{Decl, Def, Expr, File};
-use crate::syntax::{fresh, Ctor, CtorParams, DataDef, FnDef, FnSig, Ident, Param};
+use crate::syntax::{Ctor, CtorParams, DataDef, FnDef, FnSig, Ident, Param, fresh};
 
 pub type Msg<'src> = Rich<'src, char>;
 

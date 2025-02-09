@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::syntax::r#abstract::Term;
-use crate::syntax::{fresh, Ident, Param, ID};
+use crate::syntax::{ID, Ident, Param, fresh};
 
 pub fn rename(term: &mut Term) {
     Renamer::default().run(term)

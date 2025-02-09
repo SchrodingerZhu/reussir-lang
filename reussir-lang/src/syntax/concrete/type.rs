@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use crate::syntax::concrete::r#type::Error::ExpectedFnType;
-use crate::syntax::concrete::{Decl, Def, Expr, File};
 use crate::syntax::r#abstract::convert::convert;
 use crate::syntax::r#abstract::{
     Decl as WellTypedDecl, Def as WellTypedDef, File as WellTypedFile, Inferred, Term,
 };
-use crate::syntax::{Ctor, CtorParams, DataDef, FnDef, FnSig, Ident, Param, ID};
+use crate::syntax::concrete::r#type::Error::ExpectedFnType;
+use crate::syntax::concrete::{Decl, Def, Expr, File};
+use crate::syntax::{Ctor, CtorParams, DataDef, FnDef, FnSig, ID, Ident, Param};
 
 #[allow(dead_code)]
 #[derive(Debug)]

@@ -1,5 +1,5 @@
 use crate::syntax::concrete::{Decl, Def, Expr, File};
-use crate::syntax::{CtorParams, DataDef, FnDef, FnSig, Ident, NameMap, Param, ID};
+use crate::syntax::{CtorParams, DataDef, FnDef, FnSig, ID, Ident, NameMap, Param};
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -150,7 +150,7 @@ impl<'src> Checker<'src> {
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::concrete::{scope, Def, Expr, File};
+    use crate::syntax::concrete::{Def, Expr, File, scope};
     use crate::syntax::surface::parse;
     use crate::syntax::{FnDef, FnSig};
 

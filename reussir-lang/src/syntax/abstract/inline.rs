@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::syntax::r#abstract::Term;
 use crate::syntax::ID;
+use crate::syntax::r#abstract::Term;
 
 #[allow(dead_code)]
 #[derive(Default)]
