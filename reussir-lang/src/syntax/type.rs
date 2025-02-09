@@ -46,3 +46,19 @@ pub enum FieldName<'ctx> {
 pub struct Composite<'ctx> {
     name: &'ctx str,
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn int_rejects_invalid_width() {
+        _ = Int::new(13, true);
+    }
+
+    #[test]
+    fn int_correctly_records_width() {
+        assert_eq!(Int::new(16, true).width(), 16);
+    }
+}
