@@ -191,7 +191,7 @@ unsafe fn dispose(object: NonNull<FreezableRcBoxHeader>) {
                     .byte_add(vtable.as_ref().data_offset);
                 dtor(ptr);
             }
-            crate::allocator::__reuse_ir_dealloc(
+            crate::allocator::__reussir_dealloc(
                 obj.cast().as_ptr(),
                 vtable.as_ref().size,
                 vtable.as_ref().alignment,
@@ -201,7 +201,7 @@ unsafe fn dispose(object: NonNull<FreezableRcBoxHeader>) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_freeze(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_freeze(object: *mut FreezableRcBoxHeader) {
     let Some(object) = NonNull::new(object) else {
         panic!("attempt to freeze null object");
     };
@@ -247,12 +247,12 @@ pub unsafe extern "C" fn __reuse_ir_freeze(object: *mut FreezableRcBoxHeader) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_freeze_atomic(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_freeze_atomic(object: *mut FreezableRcBoxHeader) {
     unimplemented!("cannot freeze {object:?}")
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_acquire_freezable(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_acquire_freezable(object: *mut FreezableRcBoxHeader) {
     let Some(object) = NonNull::new(object) else {
         panic!("attempt to acquire null object");
     };
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn __reuse_ir_acquire_freezable(object: *mut FreezableRcBo
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_release_freezable(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_release_freezable(object: *mut FreezableRcBoxHeader) {
     if let Some(object) = NonNull::new(object) {
         if decrease_refcnt(object) {
             dispose(object);
@@ -272,17 +272,17 @@ pub unsafe extern "C" fn __reuse_ir_release_freezable(object: *mut FreezableRcBo
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_acquire_atomic_freezable(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_acquire_atomic_freezable(object: *mut FreezableRcBoxHeader) {
     unimplemented!("cannot acquire {object:?}")
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_release_atomic_freezable(object: *mut FreezableRcBoxHeader) {
+pub unsafe extern "C" fn __reussir_release_atomic_freezable(object: *mut FreezableRcBoxHeader) {
     unimplemented!("cannot release {object:?}")
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_clean_up_region(region: *mut RegionCtx) {
+pub unsafe extern "C" fn __reussir_clean_up_region(region: *mut RegionCtx) {
     let mut tail = NonNull::new((*region).tail);
     while let Some(object) = tail {
         tail = NonNull::new(object.as_ref().next);
@@ -295,7 +295,7 @@ pub unsafe extern "C" fn __reuse_ir_clean_up_region(region: *mut RegionCtx) {
                     .byte_add(vtable.as_ref().data_offset);
                 dtor(ptr);
             }
-            crate::allocator::__reuse_ir_dealloc(
+            crate::allocator::__reussir_dealloc(
                 object.cast().as_ptr(),
                 vtable.as_ref().size,
                 vtable.as_ref().alignment,
@@ -305,6 +305,6 @@ pub unsafe extern "C" fn __reuse_ir_clean_up_region(region: *mut RegionCtx) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_clean_up_region_atomic(region: *mut RegionCtx) {
+pub unsafe extern "C" fn __reussir_clean_up_region_atomic(region: *mut RegionCtx) {
     unimplemented!("cannot clean up region: {region:?}")
 }

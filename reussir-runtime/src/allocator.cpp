@@ -1,20 +1,20 @@
 #include "snmalloc/snmalloc.h"
 
 extern "C" [[gnu::visibility("default")]] void *
-__reuse_ir_alloc_impl(size_t size, size_t alignment) {
+__reussir_alloc_impl(size_t size, size_t alignment) {
   using namespace snmalloc;
   return ThreadAlloc::get().alloc(aligned_size(alignment, size));
 }
 
 extern "C" [[gnu::visibility("default")]] void
-__reuse_ir_dealloc_impl(void *ptr, size_t size, size_t alignment) {
+__reussir_dealloc_impl(void *ptr, size_t size, size_t alignment) {
   using namespace snmalloc;
   ThreadAlloc::get().dealloc(ptr, aligned_size(alignment, size));
 }
 
 extern "C" [[gnu::visibility("default")]] void *
-__reuse_ir_realloc_impl(void *ptr, size_t old_size, size_t alignment,
-                        size_t new_size) {
+__reussir_realloc_impl(void *ptr, size_t old_size, size_t alignment,
+                       size_t new_size) {
   using namespace snmalloc;
   size_t aligned_old_size = aligned_size(alignment, old_size),
          aligned_new_size = aligned_size(alignment, new_size);
@@ -30,8 +30,8 @@ __reuse_ir_realloc_impl(void *ptr, size_t old_size, size_t alignment,
 }
 
 extern "C" [[gnu::visibility("default")]] void *
-__reuse_ir_realloc_nocopy_impl(void *ptr, size_t old_size, size_t alignment,
-                               size_t new_size) {
+__reussir_realloc_nocopy_impl(void *ptr, size_t old_size, size_t alignment,
+                              size_t new_size) {
   using namespace snmalloc;
   size_t aligned_old_size = aligned_size(alignment, old_size),
          aligned_new_size = aligned_size(alignment, new_size);

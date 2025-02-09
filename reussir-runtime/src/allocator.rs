@@ -6,15 +6,15 @@ use std::{
 
 #[cfg(feature = "snmalloc")]
 extern "C" {
-    pub fn __reuse_ir_alloc_impl(size: usize, alignment: usize) -> *mut c_void;
-    pub fn __reuse_ir_dealloc_impl(ptr: *mut c_void, size: usize, alignment: usize);
-    pub fn __reuse_ir_realloc_impl(
+    pub fn __reussir_alloc_impl(size: usize, alignment: usize) -> *mut c_void;
+    pub fn __reussir_dealloc_impl(ptr: *mut c_void, size: usize, alignment: usize);
+    pub fn __reussir_realloc_impl(
         ptr: *mut c_void,
         old_size: usize,
         alignment: usize,
         size: usize,
     ) -> *mut c_void;
-    pub fn __reuse_ir_realloc_nocopy_impl(
+    pub fn __reussir_realloc_nocopy_impl(
         ptr: *mut c_void,
         old_size: usize,
         alignment: usize,
@@ -23,9 +23,9 @@ extern "C" {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_alloc(size: usize, alignment: usize) -> *mut c_void {
+pub unsafe extern "C" fn __reussir_alloc(size: usize, alignment: usize) -> *mut c_void {
     let res = if cfg!(feature = "snmalloc") {
-        __reuse_ir_alloc_impl(size, alignment)
+        __reussir_alloc_impl(size, alignment)
     } else {
         std::alloc::alloc(Layout::from_size_align_unchecked(size, alignment)) as _
     };
@@ -36,23 +36,23 @@ pub unsafe extern "C" fn __reuse_ir_alloc(size: usize, alignment: usize) -> *mut
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_dealloc(ptr: *mut c_void, size: usize, alignment: usize) {
+pub unsafe extern "C" fn __reussir_dealloc(ptr: *mut c_void, size: usize, alignment: usize) {
     if cfg!(feature = "snmalloc") {
-        __reuse_ir_dealloc_impl(ptr, size, alignment);
+        __reussir_dealloc_impl(ptr, size, alignment);
     } else {
         std::alloc::dealloc(ptr as _, Layout::from_size_align_unchecked(size, alignment));
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_realloc(
+pub unsafe extern "C" fn __reussir_realloc(
     ptr: *mut c_void,
     old_size: usize,
     alignment: usize,
     size: usize,
 ) -> *mut c_void {
     let res = if cfg!(feature = "snmalloc") {
-        __reuse_ir_realloc_impl(ptr, old_size, alignment, size)
+        __reussir_realloc_impl(ptr, old_size, alignment, size)
     } else {
         std::alloc::realloc(
             ptr as _,
@@ -67,14 +67,14 @@ pub unsafe extern "C" fn __reuse_ir_realloc(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __reuse_ir_realloc_nocopy(
+pub unsafe extern "C" fn __reussir_realloc_nocopy(
     ptr: *mut c_void,
     old_size: usize,
     alignment: usize,
     size: usize,
 ) -> *mut c_void {
     let res = if cfg!(feature = "snmalloc") {
-        __reuse_ir_realloc_nocopy_impl(ptr, old_size, alignment, size)
+        __reussir_realloc_nocopy_impl(ptr, old_size, alignment, size)
     } else {
         std::alloc::realloc(
             ptr as _,
@@ -95,15 +95,15 @@ mod global {
 
     unsafe impl GlobalAlloc for SnMalloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            __reuse_ir_alloc_impl(layout.size(), layout.align()) as _
+            __reussir_alloc_impl(layout.size(), layout.align()) as _
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            __reuse_ir_dealloc_impl(ptr as _, layout.size(), layout.align());
+            __reussir_dealloc_impl(ptr as _, layout.size(), layout.align());
         }
 
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            __reuse_ir_realloc_impl(ptr as _, layout.size(), layout.align(), new_size) as _
+            __reussir_realloc_impl(ptr as _, layout.size(), layout.align(), new_size) as _
         }
     }
 

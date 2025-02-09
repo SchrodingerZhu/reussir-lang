@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
-project(reuse-runtime-allocator CXX)
+project(reussir-runtime-allocator CXX)
 include(FetchContent)
 include(CheckCXXCompilerFlag)
 FetchContent_Declare(
   snmalloc
   GIT_REPOSITORY https://github.com/microsoft/snmalloc
-  GIT_TAG        fcad15456b04ec59e2ab7df7ba27a4d8933c7f6a
+  GIT_TAG        a3fe420af250f4662aced78b167e45166d202898
 )
 FetchContent_GetProperties(snmalloc)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -21,9 +21,12 @@ if(NOT snmalloc_POPULATED)
   add_subdirectory(${snmalloc_SOURCE_DIR} ${snmalloc_BINARY_DIR})
 endif()
 file(GLOB_RECURSE REUSE_RUNTIME_SOURCES src/allocator.cpp)
-add_library(reuse-allocator STATIC ${REUSE_RUNTIME_SOURCES})
-target_link_libraries(reuse-allocator PRIVATE snmalloc)
-target_compile_options(reuse-allocator PRIVATE -fno-exceptions -fno-rtti -nostdlib++)
-if (UNIX AND NOT APPLE)
-  target_compile_definitions(reuse-allocator PRIVATE SNMALLOC_USE_PTHREAD_DESTRUCTORS=1)
+add_library(reussir-allocator STATIC ${REUSE_RUNTIME_SOURCES})
+target_link_libraries(reussir-allocator PRIVATE snmalloc)
+target_compile_options(reussir-allocator PRIVATE -fno-exceptions -fno-rtti -nostdlib++)
+
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  target_compile_definitions(reussir-allocator PRIVATE SNMALLOC_USE_THREAD_DESTRUCTORS=1)
+elseif (UNIX AND NOT APPLE)
+  target_compile_definitions(reussir-allocator PRIVATE SNMALLOC_USE_PTHREAD_DESTRUCTORS=1)
 endif()

@@ -1,10 +1,9 @@
 fn main() {
     let dst = cmake::Config::new(".")
-        .profile("RelWithDebInfo")
-        .build_target("reuse-allocator")
+        .build_target("reussir-allocator")
         .build();
     println!("cargo:rustc-link-search=native={}/build", dst.display());
-    println!("cargo:rustc-link-lib=static=reuse-allocator");
+    println!("cargo:rustc-link-lib=static=reussir-allocator");
     // link c++ on apple
     if cfg!(target_os = "linux") {
         println!("cargo:rustc-link-lib=dylib=atomic");
