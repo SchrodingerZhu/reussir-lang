@@ -1,0 +1,20 @@
+add_mlir_dialect_library(MLIRReussirPasses
+  STATIC
+    ConvertReussirToLLVM.cpp
+    ClosureOutlining.cpp
+    ExpandControlFlow.cpp
+    AcquireReleaseFusion.cpp
+    InferUnionTag.cpp
+    PrintReuseAnalysis.cpp
+    TokenReuse.cpp
+    GenFreezableVTable.cpp
+  DEPENDS
+    MLIRReussir
+    MLIRReussirAnalysis
+    MLIRReussirPassIncGen
+  LINK_COMPONENTS
+    Core
+  LINK_LIBS PUBLIC
+    MLIRReussir
+    MLIRReussirAnalysis
+)

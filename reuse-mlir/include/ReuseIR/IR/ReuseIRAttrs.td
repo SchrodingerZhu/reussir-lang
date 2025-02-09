@@ -1,4 +1,0 @@
-#ifndef REUSE_IR_ATTRS
-#define REUSE_IR_ATTRS
-
-#endif // REUSE_IR_ATTRS

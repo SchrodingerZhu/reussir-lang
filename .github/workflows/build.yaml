@@ -34,9 +34,9 @@ jobs:
           components: clippy, rustfmt
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.5
-      - name: ReuseIR Check
+      - name: Reussir Check
         run: |
-            cmake -S reuse-mlir -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            cmake -S reussir-mlir -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
             cmake --build build --target check --parallel
       - name: Run Clippy
         run: cargo clippy

@@ -23,9 +23,9 @@ jobs:
             sudo sed -i 's/libLLVM.so.1/libLLVM.so/g' /usr/lib/llvm-${{matrix.version}}/lib/cmake/llvm/LLVMExports-relwithdebinfo.cmake
             sudo touch "/usr/lib/llvm-${{matrix.version}}/lib/libLibcTableGenUtil.a"
 
-      - name: Build ReuseIR code documentation
+      - name: Build Reussir code documentation
         run: |
-            cmake -S reuse-mlir -B build -GNinja
+            cmake -S reussir-mlir -B build -GNinja
             cmake --build build --target reuseir-doc
 
       - name: Install code documentation

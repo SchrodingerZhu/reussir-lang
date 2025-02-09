@@ -1,0 +1,4 @@
+#ifndef REUSSIR_ATTRS
+#define REUSSIR_ATTRS
+
+#endif // REUSSIR_ATTRS
