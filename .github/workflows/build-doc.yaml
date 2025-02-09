@@ -4,7 +4,7 @@ jobs:
   build-deploy:
     strategy:
       matrix:
-        version: [20]
+        version: [19]
     env:
       MLIR_DIR: /usr/lib/llvm-${{matrix.version}}/lib/cmake/mlir/
       LLVM_DIR: /usr/lib/llvm-${{matrix.version}}/

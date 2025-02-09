@@ -4,7 +4,7 @@ jobs:
   build:
     strategy:
       matrix:
-        version: [18, 19, 20]
+        version: [18, 19]
     env:
       RUSTFLAGS: "-Dwarnings"
       MLIR_DIR: /usr/lib/llvm-${{matrix.version}}/lib/cmake/mlir/
