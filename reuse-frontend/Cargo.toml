@@ -1,8 +1,0 @@
-[package]
-name = "reuse-frontend"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-chumsky = "1.0.0-alpha.7"
-ariadne = "0.4.1"

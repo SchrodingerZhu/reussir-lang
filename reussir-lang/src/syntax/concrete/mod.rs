@@ -61,4 +61,4 @@ pub enum Expr<'src> {
     Pure,
 }
 
-impl<'src> Syntax for Expr<'src> {}
+impl Syntax for Expr<'_> {}

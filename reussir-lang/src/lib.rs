@@ -9,7 +9,7 @@ fn print_parse_errors<'src>(es: &[Msg<'src>], src: &'src str) {
     es.iter().for_each(|e| {
         let range = e.span();
         let src_id = "<stdin>";
-        Report::build(ReportKind::Error, src_id, range.start)
+        Report::build(ReportKind::Error, (src_id, range.start..range.start))
             .with_message("parse error")
             .with_label(
                 Label::new((src_id, range.into_range()))

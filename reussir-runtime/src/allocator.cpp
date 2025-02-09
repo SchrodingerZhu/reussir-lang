@@ -1,4 +1,5 @@
 #include "snmalloc/snmalloc.h"
+#include <cstring>
 
 extern "C" [[gnu::visibility("default")]] void *
 __reussir_alloc_impl(size_t size, size_t alignment) {

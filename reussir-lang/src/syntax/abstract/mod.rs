@@ -157,4 +157,4 @@ pub enum Term<'src> {
     },
 }
 
-impl<'src> Syntax for Term<'src> {}
+impl Syntax for Term<'_> {}

@@ -67,7 +67,7 @@ pub enum CtorParams<'src, T: Syntax> {
     Named(Box<[Param<'src, T>]>),
 }
 
-impl<'src, T: Syntax> Default for CtorParams<'src, T> {
+impl<T: Syntax> Default for CtorParams<'_, T> {
     fn default() -> Self {
         Self::None
     }

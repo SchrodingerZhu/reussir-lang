@@ -188,13 +188,13 @@ def f1(): f0()
                                 assert_eq!(id, inner_id);
                                 assert_ne!(id, outer_id);
                             }
-                            _ => assert!(false),
+                            _ => unimplemented!(),
                         }
                     }
-                    _ => assert!(false),
+                    _ => unimplemented!(),
                 }
             }
-            _ => assert!(false),
+            _ => unimplemented!(),
         };
     }
 }
