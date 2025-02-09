@@ -4,5 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chumsky = "1.0.0-alpha.8"
 ariadne = "0.5.0"
+bumpalo = "3.17.0"
+rug = "1.27.0"
+
+[dependencies.chumsky]
+version = "1.0.0-alpha.8"
+features = [
+  "pratt", "regex", "memoization"
+]
