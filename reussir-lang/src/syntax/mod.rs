@@ -6,6 +6,7 @@ mod func;
 mod r#type;
 
 struct Context {
-    allocator: Bump,
+    arena: Bump,
     input: std::path::PathBuf,
+    src: String,
 }
