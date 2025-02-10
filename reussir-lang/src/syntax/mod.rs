@@ -1,25 +1,57 @@
 #![allow(unused)]
-use std::path::Path;
+use std::{cell::RefCell, ops::Deref, path::Path};
 
 use bumpalo::Bump;
+use chumsky::{Parser, error::Rich, extra::Full, input::Input, span::SimpleSpan};
 use rustc_hash::FxHashMapRand;
 use thiserror::Error;
 use r#type::Record;
 
 mod expr;
 mod func;
+mod lexer;
 mod r#type;
 
-struct Context<'ctx> {
+#[derive(Debug, Copy, Clone)]
+pub struct WithSpan<T>(pub T, pub SimpleSpan);
+
+impl<T: PartialEq> PartialEq for WithSpan<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T: Eq> Eq for WithSpan<T> {}
+
+impl<T> std::hash::Hash for WithSpan<T>
+where
+    T: std::hash::Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl<T> Deref for WithSpan<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+type RecordStore<'ctx> = FxHashMapRand<QualifiedName<'ctx>, WithSpan<&'ctx Record<'ctx>>>;
+
+pub struct Context<'ctx> {
     arena: Bump,
     input: Option<std::path::PathBuf>,
     src: String,
-    records: FxHashMapRand<QualifiedName<'ctx>, Record<'ctx>>,
+    records: RefCell<RecordStore<'ctx>>,
     scope: Vec<&'ctx str>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct QualifiedName<'ctx>(&'ctx [&'ctx str], &'ctx str);
+pub struct QualifiedName<'ctx>(&'ctx [&'ctx str], &'ctx str);
 
 impl QualifiedName<'_> {
     pub fn qualifier(&self) -> &[&str] {
@@ -58,7 +90,7 @@ impl<'ctx> Context<'ctx> {
             arena: Bump::new(),
             input,
             src,
-            records: FxHashMapRand::default(),
+            records: RefCell::new(FxHashMapRand::default()),
             scope: Vec::new(),
         }
     }

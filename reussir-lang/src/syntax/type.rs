@@ -1,6 +1,8 @@
 #![allow(unused)]
 
-use super::QualifiedName;
+use super::{QualifiedName, WithSpan};
+use chumsky::extra::Context;
+use chumsky::prelude::*;
 use chumsky::{container::Seq, span::SimpleSpan};
 use std::collections::hash_map::Entry;
 
@@ -8,13 +10,21 @@ use std::collections::hash_map::Entry;
 pub enum Type<'ctx> {
     Int(Int),
     Float(Float),
+    Char,
     Str,
-    SrcLoc(TypePtr<'ctx>, SimpleSpan),
+    Boolean,
+    Unit,
+    Never,
+    Func {
+        args: &'ctx [TypePtrWithSpan<'ctx>],
+        ret: TypePtrWithSpan<'ctx>,
+    },
     #[allow(clippy::enum_variant_names)]
     TypeName(QualifiedName<'ctx>),
 }
 
 type TypePtr<'ctx> = &'ctx Type<'ctx>;
+type TypePtrWithSpan<'ctx> = WithSpan<TypePtr<'ctx>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Int {
@@ -71,7 +81,7 @@ pub struct Ctor<'ctx> {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Record<'ctx> {
-    name: QualifiedName<'ctx>,
+    name: WithSpan<QualifiedName<'ctx>>,
     ctors: &'ctx [Ctor<'ctx>],
     is_rc_managed: bool,
 }
@@ -114,17 +124,24 @@ impl<'ctx> super::Context<'ctx> {
         const TYPE: Type = Type::Str;
         &TYPE
     }
-    pub fn new_record<I>(
-        &'ctx mut self,
-        name: QualifiedName<'ctx>,
+    pub fn get_char_type(&self) -> TypePtr {
+        const TYPE: Type = Type::Char;
+        &TYPE
+    }
+    pub fn new_record_in_context<I>(
+        &'ctx self,
+        basename: WithSpan<&'ctx str>,
         ctors: I,
         is_rc_managed: bool,
+        location: SimpleSpan,
     ) -> bool
     where
         I: IntoIterator<Item = Ctor<'ctx>>,
         I::IntoIter: ExactSizeIterator,
     {
-        match self.records.entry(name) {
+        let name = self.new_qualified_name(self.scope.iter().copied(), basename.0);
+        let name = WithSpan(name, basename.1);
+        match self.records.borrow_mut().entry(name.0) {
             Entry::Occupied(occupied) => false,
             Entry::Vacant(vacant) => {
                 let ctors = self.arena.alloc_slice_fill_iter(ctors);
@@ -133,13 +150,38 @@ impl<'ctx> super::Context<'ctx> {
                     ctors,
                     is_rc_managed,
                 };
-                vacant.insert(record);
+                vacant.insert(WithSpan(self.arena.alloc(record), location));
                 true
             }
         }
     }
-    pub fn lookup_record(&self, name: QualifiedName<'ctx>) -> Option<&Record> {
-        self.records.get(&name)
+    pub fn new_record<I>(
+        &'ctx self,
+        name: WithSpan<QualifiedName<'ctx>>,
+        ctors: I,
+        is_rc_managed: bool,
+        location: SimpleSpan,
+    ) -> bool
+    where
+        I: IntoIterator<Item = Ctor<'ctx>>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        match self.records.borrow_mut().entry(name.0) {
+            Entry::Occupied(occupied) => false,
+            Entry::Vacant(vacant) => {
+                let ctors = self.arena.alloc_slice_fill_iter(ctors);
+                let record = Record {
+                    name,
+                    ctors,
+                    is_rc_managed,
+                };
+                vacant.insert(WithSpan(self.arena.alloc(record), location));
+                true
+            }
+        }
+    }
+    pub fn lookup_record(&self, name: QualifiedName) -> Option<WithSpan<&Record>> {
+        self.records.borrow().get(&name).copied()
     }
 }
 

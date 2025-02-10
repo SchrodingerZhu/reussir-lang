@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 ariadne = "0.5.0"
-bumpalo = "3.17.0"
 rug = "1.27.0"
 rustc-hash = { version = "2.1.1", features = ["rand"] }
 thiserror = "2.0.11"
@@ -14,4 +13,10 @@ thiserror = "2.0.11"
 version = "1.0.0-alpha.8"
 features = [
   "pratt", "regex", "memoization"
+]
+
+[dependencies.bumpalo]
+version = "3.17.0"
+features = [
+  "collections"
 ]
