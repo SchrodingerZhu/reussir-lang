@@ -1,3 +1,4 @@
+#![allow(unused)]
 use bumpalo::Bump;
 
 mod expr;

@@ -1,3 +1,4 @@
+#![allow(unused)]
 pub enum Type<'ctx> {
     Int(Int),
     Float(Float),
