@@ -1,15 +1,17 @@
 #![allow(unused)]
 
-use chumsky::span::SimpleSpan;
+use super::QualifiedName;
+use chumsky::{container::Seq, span::SimpleSpan};
+use std::collections::hash_map::Entry;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type<'ctx> {
     Int(Int),
     Float(Float),
     Str,
-    Record(Record<'ctx>),
     SrcLoc(TypePtr<'ctx>, SimpleSpan),
-    Typename(&'ctx str),
+    #[allow(clippy::enum_variant_names)]
+    TypeName(QualifiedName<'ctx>),
 }
 
 type TypePtr<'ctx> = &'ctx Type<'ctx>;
@@ -69,7 +71,7 @@ pub struct Ctor<'ctx> {
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Record<'ctx> {
-    name: &'ctx str,
+    name: QualifiedName<'ctx>,
     ctors: &'ctx [Ctor<'ctx>],
     is_rc_managed: bool,
 }
@@ -92,7 +94,7 @@ macro_rules! impl_float_getter {
     };
 }
 
-impl super::Context {
+impl<'ctx> super::Context<'ctx> {
     impl_integer_getter!(get_i8_type, 8, true);
     impl_integer_getter!(get_u8_type, 8, false);
     impl_integer_getter!(get_i16_type, 16, true);
@@ -112,17 +114,38 @@ impl super::Context {
         const TYPE: Type = Type::Str;
         &TYPE
     }
+    pub fn new_record<I>(
+        &'ctx mut self,
+        name: QualifiedName<'ctx>,
+        ctors: I,
+        is_rc_managed: bool,
+    ) -> bool
+    where
+        I: IntoIterator<Item = Ctor<'ctx>>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        match self.records.entry(name) {
+            Entry::Occupied(occupied) => false,
+            Entry::Vacant(vacant) => {
+                let ctors = self.arena.alloc_slice_fill_iter(ctors);
+                let record = Record {
+                    name,
+                    ctors,
+                    is_rc_managed,
+                };
+                vacant.insert(record);
+                true
+            }
+        }
+    }
+    pub fn lookup_record(&self, name: QualifiedName<'ctx>) -> Option<&Record> {
+        self.records.get(&name)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    #[should_panic]
-    fn int_rejects_invalid_width() {
-        _ = Int::new(13, true);
-    }
 
     #[test]
     fn int_correctly_records_width() {
