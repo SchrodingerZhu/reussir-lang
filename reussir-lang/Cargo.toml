@@ -4,5 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chumsky = "1.0.0-alpha.8"
 ariadne = "0.5.0"
+rug = { version = "1.27.0", features = ["num-traits"] }
+rustc-hash = { version = "2.1.1", features = ["rand"] }
+smallvec = "2.0.0-alpha.10"
+thiserror = "2.0.11"
+unescaper = "0.1.5"
+
+[dependencies.chumsky]
+version = "1.0.0-alpha.8"
+features = [
+  "pratt", "regex", "memoization"
+]
+
+[dependencies.bumpalo]
+version = "3.17.0"
+features = [
+  "collections"
+]
