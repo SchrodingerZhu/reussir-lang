@@ -3,12 +3,12 @@ use std::{cell::RefCell, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    Parser, container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan,
+    container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan, Parser,
 };
+use r#type::Record;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
 use thiserror::Error;
-use r#type::Record;
 
 mod expr;
 mod func;
@@ -104,6 +104,10 @@ impl<'ctx> Context<'ctx> {
 
     pub fn from_src<S: AsRef<str>>(src: S) -> Self {
         Self::new(None, src.as_ref().to_string())
+    }
+
+    pub fn alloc_str<S: AsRef<str>>(&self, src: S) -> &str {
+        self.arena.alloc_str(src.as_ref())
     }
 
     fn new(input: Option<std::path::PathBuf>, src: String) -> Self {

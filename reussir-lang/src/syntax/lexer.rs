@@ -1,13 +1,14 @@
 use chumsky::{
-    IterParser, Parser,
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
     input::{Input, StrInput},
+    prelude::choice,
     span::SimpleSpan,
-    text::Char,
+    text::{digits, Char},
+    IterParser, Parser,
 };
-use rug::Complete;
+use rug::{float::Round, ops::CompleteRound, Complete};
 use smallvec::SmallVec;
 
 use crate::syntax::SmallCollector;
@@ -34,6 +35,7 @@ pub enum Token<'ctx> {
     F128,
     Str,
     Bool,
+    Char,
     // Keywords
     If,
     Then,
@@ -87,8 +89,9 @@ pub enum Token<'ctx> {
     // Literals and Identifiers
     Int(rug::Integer),
     Float(rug::Float),
-    String(&'ctx str),
+    String(String),
     Ident(&'ctx str),
+    CharLit(char),
 }
 
 type LexerExtra<'ctx> = Full<Rich<'ctx, char>, SimpleState<&'ctx Context<'ctx>>, ()>;
@@ -96,8 +99,8 @@ type LexerExtra<'ctx> = Full<Rich<'ctx, char>, SimpleState<&'ctx Context<'ctx>>,
 pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>>
 {
     use chumsky::primitive::*;
-    fn integer_literal_with_radix<'ctx, const PREFIX: char, const RADIX: u32>()
-    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
+    fn integer_literal_with_radix<'ctx, const PREFIX: char, const RADIX: u32>(
+    ) -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
         use chumsky::prelude::*;
         let body = chumsky::text::digits(RADIX)
             .separated_by(just('_'))
@@ -111,8 +114,8 @@ pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Intege
         let prefix = just('0').ignore_then(just(PREFIX));
         prefix.ignore_then(body)
     }
-    fn decimal_integer_literal<'ctx>()
-    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
+    fn decimal_integer_literal<'ctx>(
+    ) -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
         use chumsky::prelude::*;
         chumsky::text::digits(10)
             .separated_by(just('_'))
@@ -143,7 +146,69 @@ pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Intege
         })
 }
 
+pub fn float_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Float, LexerExtra<'ctx>> {
+    use chumsky::prelude::*;
+    let optional_sign = one_of(['+', '-']).repeated().at_most(1);
+    let special = choice((just("nan"), just("inf"))).ignored();
+    let exponent = one_of(['e', 'E'])
+        .then(optional_sign)
+        .then(digits(10))
+        .ignored();
+    let a_exp = digits(10).then(exponent).ignored();
+    let a_dot_b_exp = digits(10)
+        .then(just('.'))
+        .then(digits(10))
+        .then(exponent.repeated().at_most(1))
+        .ignored();
+    let body = choice((special, a_exp, a_dot_b_exp));
+    optional_sign
+        .ignore_then(body)
+        .to_slice()
+        .try_map(|src, span| {
+            rug::Float::parse(src)
+                .map_err(|e| Rich::custom(span, "cannot parse floating point literal {e}"))
+                .map(|x| x.complete(128))
+        })
+}
+
+pub fn unqouted_char_literal_lexer<'ctx, const QUOTE: char>(
+) -> impl Parser<'ctx, &'ctx str, char, LexerExtra<'ctx>> {
+    use chumsky::prelude::*;
+    let unicode_digits = digits(16)
+        .at_most(6)
+        .to_slice()
+        .delimited_by(just('{'), just('}'))
+        .try_map(|x, span| {
+            u32::from_str_radix(x, 16)
+                .map_err(|e| {
+                    Rich::custom(
+                        span,
+                        format!("failed to convert unicode sequence as U32: {e}"),
+                    )
+                })
+                .and_then(|x| {
+                    char::from_u32(x)
+                        .ok_or_else(|| Rich::custom(span, "unicode value out of scope".to_string()))
+                })
+        });
+    let unicode_seq = just('u').ignore_then(unicode_digits);
+    let ch = |x: char, y: char| just(x).to(y);
+    let escaped_char = just('\\').ignore_then(choice((
+        unicode_seq,
+        ch('n', '\n'),
+        ch('r', '\r'),
+        ch('t', '\t'),
+        ch('b', '\u{08}'),
+        ch('f', '\u{0C}'),
+        ch('\\', '\\'),
+        ch('\'', '\''),
+        ch('"', '"'),
+    )));
+    escaped_char.or(any().and_is(just(QUOTE).or(just('\\')).not()))
+}
+
 pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ctx>> {
+    use chumsky::prelude::*;
     let idents_like = chumsky::text::ident().map(|ident: &str| match ident {
         "i8" => Token::I8,
         "i16" => Token::I16,
@@ -162,10 +227,20 @@ pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ct
         "f128" => Token::F128,
         "str" => Token::Str,
         "bool" => Token::Bool,
+        "char" => Token::Char,
         ident => Token::Ident(ident),
     });
     let integer = integer_literal_lexer().map(Token::Int);
-    idents_like.or(integer)
+    let float = float_literal_lexer().map(Token::Float);
+    let char_lit = unqouted_char_literal_lexer::<'\''>()
+        .delimited_by(just('\''), just('\''))
+        .map(Token::CharLit);
+    let string_lit = unqouted_char_literal_lexer::<'\"'>()
+        .repeated()
+        .collect::<String>()
+        .delimited_by(just('\"'), just('\"'))
+        .map(Token::String);
+    choice((float, integer, idents_like, char_lit, string_lit))
 }
 
 #[cfg(test)]
@@ -184,12 +259,42 @@ mod test {
             println!("{res:#?}");
             assert_eq!(res.output().unwrap(), &Token::$target($value));
         };
+        ($src:literal, $target:ident => $lambda:expr) => {
+            let context = Context::from_src($src);
+            let res = lexer().parse_with_state($src, &mut SimpleState(&context));
+            println!("{res:#?}");
+            match res.output().unwrap() {
+                Token::$target(x) => assert!($lambda(x)),
+                _ => panic!("unexpected token kind"),
+            }
+        };
     }
+
     #[test]
     fn lexer_recognizes_int_types() {
         test_single_static!("i8", I8);
         test_single_static!("u8", U8);
         test_single_static!("i16", I16);
+    }
+
+    #[test]
+    fn lexer_recognizes_char_literals() {
+        test_single_static!(r"'a'", CharLit, 'a');
+        test_single_static!(r"'\n'", CharLit, '\n');
+        test_single_static!(r"'\''", CharLit, '\'');
+        test_single_static!(r"'\\'", CharLit, '\\');
+        test_single_static!(r"'😊'", CharLit, '😊');
+        test_single_static!(r"'\u{263A}'", CharLit, '☺');
+    }
+    #[test]
+    fn lexer_recognizes_string_literals() {
+        test_single_static!(r#""abc""#, String, "abc".to_string());
+        test_single_static!(r#""abc\"""#, String, "abc\"".to_string());
+        test_single_static!(
+            r#""😊😊😊123$$\n\t""#,
+            String,
+            "😊😊😊123$$\n\t".to_string()
+        );
     }
 
     #[test]
@@ -215,6 +320,41 @@ mod test {
                 16
             )
             .unwrap()
+        );
+    }
+
+    #[test]
+    fn lexer_recognizes_special_floats() {
+        test_single_static!("nan", Float => |x : &rug::Float| x.is_nan());
+        test_single_static!("inf", Float => |x : &rug::Float| x.is_infinite());
+    }
+
+    #[test]
+    fn lexer_recognizes_float_literals() {
+        test_single_static!(
+            "12.0",
+            Float,
+            rug::Float::parse("12.0").unwrap().complete(128)
+        );
+        test_single_static!(
+            "-12.12345",
+            Float,
+            rug::Float::parse("-12.12345").unwrap().complete(128)
+        );
+        test_single_static!(
+            "-12E12345",
+            Float,
+            rug::Float::parse("-12E12345").unwrap().complete(128)
+        );
+        test_single_static!(
+            "+12.123E12345",
+            Float,
+            rug::Float::parse("+12.123E12345").unwrap().complete(128)
+        );
+        test_single_static!(
+            "+12.123E-12345",
+            Float,
+            rug::Float::parse("+12.123E-12345").unwrap().complete(128)
         );
     }
 }
