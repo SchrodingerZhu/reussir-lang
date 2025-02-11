@@ -2,8 +2,11 @@
 use std::{cell::RefCell, ops::Deref, path::Path};
 
 use bumpalo::Bump;
-use chumsky::{Parser, error::Rich, extra::Full, input::Input, span::SimpleSpan};
+use chumsky::{
+    Parser, container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan,
+};
 use rustc_hash::FxHashMapRand;
+use smallvec::SmallVec;
 use thiserror::Error;
 use r#type::Record;
 
@@ -11,6 +14,24 @@ mod expr;
 mod func;
 mod lexer;
 mod r#type;
+
+struct SmallCollector<T, const N: usize>(SmallVec<T, N>);
+
+impl<T, const N: usize> Default for SmallCollector<T, N> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<T: Default, const N: usize> Container<T> for SmallCollector<T, N> {
+    fn with_capacity(n: usize) -> Self {
+        Self(SmallVec::with_capacity(n))
+    }
+
+    fn push(&mut self, item: T) {
+        self.0.push(item);
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T>(pub T, pub SimpleSpan);
