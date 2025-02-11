@@ -3,12 +3,12 @@ use std::{cell::RefCell, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan, Parser,
+    Parser, container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan,
 };
-use r#type::Record;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
 use thiserror::Error;
+use r#type::Record;
 
 mod expr;
 mod func;

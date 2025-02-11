@@ -1,14 +1,14 @@
 use chumsky::{
+    IterParser, Parser,
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
     input::{Input, StrInput},
     prelude::choice,
     span::SimpleSpan,
-    text::{digits, Char},
-    IterParser, Parser,
+    text::{Char, digits},
 };
-use rug::{float::Round, ops::CompleteRound, Complete};
+use rug::{Complete, float::Round, ops::CompleteRound};
 use smallvec::SmallVec;
 
 use crate::syntax::SmallCollector;
@@ -99,8 +99,8 @@ type LexerExtra<'ctx> = Full<Rich<'ctx, char>, SimpleState<&'ctx Context<'ctx>>,
 pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>>
 {
     use chumsky::primitive::*;
-    fn integer_literal_with_radix<'ctx, const PREFIX: char, const RADIX: u32>(
-    ) -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
+    fn integer_literal_with_radix<'ctx, const PREFIX: char, const RADIX: u32>()
+    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
         use chumsky::prelude::*;
         let body = chumsky::text::digits(RADIX)
             .separated_by(just('_'))
@@ -114,8 +114,8 @@ pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Intege
         let prefix = just('0').ignore_then(just(PREFIX));
         prefix.ignore_then(body)
     }
-    fn decimal_integer_literal<'ctx>(
-    ) -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
+    fn decimal_integer_literal<'ctx>()
+    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
         use chumsky::prelude::*;
         chumsky::text::digits(10)
             .separated_by(just('_'))
@@ -171,8 +171,8 @@ pub fn float_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Float, L
         })
 }
 
-pub fn unqouted_char_literal_lexer<'ctx, const QUOTE: char>(
-) -> impl Parser<'ctx, &'ctx str, char, LexerExtra<'ctx>> {
+pub fn unqouted_char_literal_lexer<'ctx, const QUOTE: char>()
+-> impl Parser<'ctx, &'ctx str, char, LexerExtra<'ctx>> {
     use chumsky::prelude::*;
     let unicode_digits = digits(16)
         .at_most(6)
