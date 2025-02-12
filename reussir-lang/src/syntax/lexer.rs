@@ -43,12 +43,10 @@ pub enum Token<'ctx> {
     Fn,
     Return,
     Yield,
+    Cond,
     Region,
-    Unboxed,
     Data,
     Match,
-    True,
-    False,
     Let,
     // Delimiters
     LParen,
@@ -61,10 +59,11 @@ pub enum Token<'ctx> {
     Plus,
     Minus,
     Star,
-    Flash,
+    Slash,
     Percent,
     Caret,
     Not,
+    Tilde,
     And,
     Or,
     AndAnd,
@@ -85,6 +84,7 @@ pub enum Token<'ctx> {
     Colon,
     PathSep,
     RArrow,
+    LArrow,
     FatArrow,
     // Literals and Identifiers
     Int(rug::Integer),
@@ -92,6 +92,7 @@ pub enum Token<'ctx> {
     String(String),
     Ident(&'ctx str),
     CharLit(char),
+    Boolean(bool),
 }
 
 type LexerExtra<'ctx> = Full<Rich<'ctx, char>, SimpleState<&'ctx Context<'ctx>>, ()>;
@@ -228,6 +229,17 @@ pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ct
         "str" => Token::Str,
         "bool" => Token::Bool,
         "char" => Token::Char,
+        "if" => Token::If,
+        "then" => Token::Then,
+        "else" => Token::Else,
+        "fn" => Token::Fn,
+        "return" => Token::Return,
+        "yield" => Token::Yield,
+        "cond" => Token::Cond,
+        "region" => Token::Region,
+        "data" => Token::Data,
+        "match" => Token::Match,
+        "let" => Token::Let,
         ident => Token::Ident(ident),
     });
     let integer = integer_literal_lexer().map(Token::Int);
@@ -240,11 +252,128 @@ pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ct
         .collect::<String>()
         .delimited_by(just('\"'), just('\"'))
         .map(Token::String);
-    choice((float, integer, idents_like, char_lit, string_lit))
+    let boolean_lit = just("true")
+        .to(Token::Boolean(true))
+        .or(just("false").to(Token::Boolean(false)));
+    macro_rules! dispatch {
+        ($($pattern:expr => $token:ident),+) => {
+            choice(($(just($pattern).to(Token::$token)),+))
+        };
+    }
+    let delimiter = dispatch! {
+        '(' => LParen,
+        ')' => RParen,
+        '[' => LSquare,
+        ']' => RSquare,
+        '{' => LBrace,
+        '}' => RBrace
+    };
+    let multi_operator = dispatch! {
+        "::" => PathSep,
+        "->" => RArrow,
+        "<-" => LArrow,
+        "=>" => FatArrow,
+        "<=" => Le,
+        ">=" => Ge,
+        "!=" => Ne,
+        "==" => EqEq,
+        ">>" => Shr,
+        "<<" => Shl,
+        "&&" => AndAnd,
+        "||" => OrOr
+    };
+    let operator = dispatch! {
+        '+'  => Plus,
+        '-'  => Minus,
+        '*'  => Star,
+        '/'  => Slash,
+        '%'  => Percent,
+        '^'  => Caret,
+        '~'  => Tilde,
+        '!'  => Not,
+        '&'  => And,
+        '|'  => Or,
+        '='  => Eq,
+        '<'  => Lt,
+        '>'  => Gt,
+        '@'  => At,
+        '.'  => Dot,
+        ',' => Comma,
+        ';' => Semi,
+        ':' => Colon
+    };
+    choice((
+        float,
+        integer,
+        boolean_lit,
+        idents_like,
+        char_lit,
+        string_lit,
+        delimiter,
+        multi_operator,
+        operator,
+    ))
+}
+
+pub fn lexer_stream<'ctx>()
+-> impl IterParser<'ctx, &'ctx str, WithSpan<Token<'ctx>>, LexerExtra<'ctx>> {
+    use chumsky::prelude::*;
+    let single_line_comment = custom::<_, &str, _, LexerExtra<'ctx>>(|input| {
+        let pos = input.cursor();
+        let start = input.check(just("//"));
+        if start.is_ok() {
+            input.next();
+            input.next();
+            while input.peek().is_some() {
+                if input.check(chumsky::text::newline()).is_ok() {
+                    break;
+                }
+                input.next();
+            }
+            return Ok(());
+        }
+        Err(Rich::custom(
+            input.span_since(&pos),
+            "failed to parse comment",
+        ))
+    });
+    let multiline_comment = custom::<_, &str, _, LexerExtra<'ctx>>(|input| {
+        let pos = input.cursor();
+        let start = input.check(just("/*"));
+        if start.is_ok() {
+            input.next();
+            input.next();
+            while input.peek().is_some() {
+                if input.check(just("*/")).is_ok() {
+                    input.next();
+                    input.next();
+                    return Ok(());
+                }
+                input.next();
+            }
+            return Err(Rich::custom(
+                input.span_since(&pos),
+                "unclosed multiline comment",
+            ));
+        }
+        Err(Rich::custom(
+            input.span_since(&pos),
+            "failed to parse multiline comment",
+        ))
+    });
+    let comment = single_line_comment.or(multiline_comment).padded();
+    lexer()
+        .map_with(|tok, meta| WithSpan(tok, meta.span()))
+        .padded_by(comment.repeated())
+        .padded()
+        .recover_with(skip_then_retry_until(any().ignored(), end()))
+        .repeated()
 }
 
 #[cfg(test)]
 mod test {
+    use rug::az::UnwrappedAs;
+
     use super::*;
     macro_rules! test_single_static {
         ($src:literal, $target:ident) => {
@@ -356,5 +485,25 @@ mod test {
             Float,
             rug::Float::parse("+12.123E-12345").unwrap().complete(128)
         );
+    }
+    #[test]
+    fn lexer_tokenizes_simple_input() {
+        const SRC: &'static str = r#"
+data Rbtree = Leaf | Branch(RbTree, i32, RbTree);
+// Get value of a red black tree
+fn value(t: RbTree) -> i32 {
+  match t {
+    RbTree::Leaf => 0, /* Return 0 if not defined */
+    RbTree::Branch(l, x, r) => x,
+  }
+}
+"#;
+        let context = Context::from_src(SRC);
+        let res = lexer_stream()
+            .collect::<Vec<_>>()
+            .parse_with_state(SRC, &mut SimpleState(&context));
+        for i in res.unwrap() {
+            println!("{i:#?}");
+        }
     }
 }
