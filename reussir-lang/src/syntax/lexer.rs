@@ -303,15 +303,14 @@ pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ct
         ':' => Colon
     };
     choice((
-        float,
-        integer,
-        boolean_lit,
-        idents_like,
-        char_lit,
-        string_lit,
-        delimiter,
-        multi_operator,
-        operator,
+        float.labelled("floating-point literal"),
+        integer.labelled("integer literal"),
+        boolean_lit.labelled("boolean literal"),
+        idents_like.labelled("keyword/identifier"),
+        char_lit.labelled("character literal"),
+        string_lit.labelled("string literal"),
+        delimiter.labelled("delimiter"),
+        multi_operator.or(operator).labelled("operator"),
     ))
 }
 
@@ -364,7 +363,7 @@ pub fn lexer_stream<'ctx>()
     let comment = single_line_comment.or(multiline_comment).padded();
     lexer()
         .map_with(|tok, meta| WithSpan(tok, meta.span()))
-        .padded_by(comment.repeated())
+        .padded_by(comment.repeated().labelled("comments"))
         .padded()
         .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()
