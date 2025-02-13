@@ -7,10 +7,11 @@ use chumsky::{
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
-    input::{Checkpoint, Cursor, Input, MapExtra},
+    input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
     inspector::Inspector,
     span::SimpleSpan,
 };
+use lexer::Token;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -29,7 +30,7 @@ impl<T, const N: usize> Default for SmallCollector<T, N> {
     }
 }
 
-impl<T: Default, const N: usize> Container<T> for SmallCollector<T, N> {
+impl<T, const N: usize> Container<T> for SmallCollector<T, N> {
     fn with_capacity(n: usize) -> Self {
         Self(SmallVec::with_capacity(n))
     }
@@ -116,6 +117,13 @@ impl<'ctx> Context<'ctx> {
         self.arena.alloc(data)
     }
 
+    pub fn alloc_slice<T, I: IntoIterator<Item = T>>(&self, data: I) -> &[T]
+    where
+        I::IntoIter: ExactSizeIterator,
+    {
+        self.arena.alloc_slice_fill_iter(data)
+    }
+
     fn new(input: Option<std::path::PathBuf>, src: String) -> Self {
         Self {
             arena: Bump::new(),
@@ -160,4 +168,26 @@ where
 {
     let span = map.span();
     map.state().alloc(WithSpan(value, span))
+}
+
+fn qualified_name<'a, I>()
+-> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) => x
+    };
+    let prefix = ident
+        .then_ignore(just(Token::PathSep))
+        .repeated()
+        .collect::<SmallCollector<_, 4>>();
+
+    prefix.then(ident).map_with(|(prefix, basename), m| {
+        let state: &mut &'a Context<'a> = m.state();
+        let prefix = state.alloc_slice(prefix.0);
+        let name = QualifiedName(prefix, basename);
+        map_alloc(name, m)
+    })
 }

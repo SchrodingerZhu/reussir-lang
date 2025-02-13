@@ -13,7 +13,7 @@ pub enum Expr<'ctx> {
     Float(rug::Float),
     Boolean(bool),
     IfThenElse(ExprPtr<'ctx>, ExprPtr<'ctx>, ExprPtr<'ctx>),
-    Let(),
+    Annotated(ExprPtr<'ctx> /* TODO: type ptr*/),
 }
 
 macro_rules! expr_parser {
@@ -37,7 +37,6 @@ expr_parser! {
 
     expr => {
         recursive(|expr| {
-            let prim = primitive();
             let braced_expr = || {
                 expr.clone()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace))
@@ -48,7 +47,12 @@ expr_parser! {
                 .then_ignore(just(Token::Else))
                 .then(braced_expr())
                 .map_with(|((a, b), c), m| map_alloc(Expr::IfThenElse(a, b, c), m));
-            if_then_else.or(prim)
+            choice(
+              (
+                  primitive(),
+                  if_then_else,
+              )
+            )
         })
     }
 }

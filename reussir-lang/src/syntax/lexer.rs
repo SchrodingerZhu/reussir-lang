@@ -166,6 +166,8 @@ pub enum Token<'src> {
     FatArrow,
     #[token("#")]
     Sharp,
+    #[token("()")]
+    Unit,
     // Literals and Identifiers
     #[regex(r"[+\-]?\d[\d_]*", decimal_integer_callback)]
     #[regex(r"[+\-]?0x[\da-fA-F_]+", radix_integer_callback::<16>)]
