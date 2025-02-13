@@ -1,5 +1,11 @@
-use super::Context;
-use chumsky::error::Rich;
+use std::convert::identity;
+
+use super::{Context, WithSpan};
+use chumsky::{
+    error::Rich,
+    input::{Input, Stream, ValueInput},
+    span::SimpleSpan,
+};
 use logos::{Lexer, Logos};
 use unescaper::unescape;
 
@@ -182,6 +188,7 @@ pub enum Token<'src> {
     Boolean(bool),
     #[regex(r"\p{XID_Start}\p{XID_Continue}*")]
     Ident(&'src str),
+    Error(Box<Error>),
 }
 
 fn decimal_integer_callback<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<rug::Integer, Error> {
@@ -228,6 +235,18 @@ fn radix_integer_callback<'a, const RADIX: usize>(
         .map_err(Into::into)
         .map(Into::into)
         .map(|x: rug::Integer| if slice.starts_with('-') { -x } else { x })
+}
+
+impl Context<'_> {
+    pub fn token_stream(&self) -> impl ValueInput<Token = Token, Span = SimpleSpan> {
+        let iter = Token::lexer(&self.src)
+            .spanned()
+            .map(|(res, range)| match res {
+                Ok(tk) => (tk, range.into()),
+                Err(err) => (Token::Error(Box::new(err)), range.into()),
+            });
+        Stream::from_iter(iter).map((0..self.src.len()).into(), identity)
+    }
 }
 
 #[cfg(test)]

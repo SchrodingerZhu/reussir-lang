@@ -1,9 +1,15 @@
 #![allow(unused)]
-use std::{cell::RefCell, ops::Deref, path::Path};
+use std::{cell::RefCell, iter::Inspect, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    Parser, container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan,
+    Parser,
+    container::Container,
+    error::Rich,
+    extra::{Full, SimpleState},
+    input::{Checkpoint, Cursor, Input, MapExtra},
+    inspector::Inspector,
+    span::SimpleSpan,
 };
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
@@ -106,8 +112,8 @@ impl<'ctx> Context<'ctx> {
         Self::new(None, src.as_ref().to_string())
     }
 
-    pub fn alloc_str<S: AsRef<str>>(&self, src: S) -> &str {
-        self.arena.alloc_str(src.as_ref())
+    pub fn alloc<T>(&self, data: T) -> &T {
+        self.arena.alloc(data)
     }
 
     fn new(input: Option<std::path::PathBuf>, src: String) -> Self {
@@ -131,4 +137,27 @@ impl<'ctx> Context<'ctx> {
         let qualifiers = self.arena.alloc_slice_fill_iter(qualifiers);
         QualifiedName(qualifiers, basename)
     }
+}
+
+type ParserExtra<'a> = chumsky::extra::Full<Rich<'a, lexer::Token<'a>>, &'a Context<'a>, ()>;
+
+impl<'src, I: Input<'src>> Inspector<'src, I> for &'src Context<'src> {
+    type Checkpoint = ();
+    #[inline(always)]
+    fn on_token(&mut self, _: &<I as Input<'src>>::Token) {}
+    #[inline(always)]
+    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {}
+    #[inline(always)]
+    fn on_rewind<'parse>(&mut self, _: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {}
+}
+
+fn map_alloc<'src, I, T>(
+    value: T,
+    map: &mut MapExtra<'src, '_, I, ParserExtra<'src>>,
+) -> &'src WithSpan<T>
+where
+    I: Input<'src, Token = lexer::Token<'src>, Span = SimpleSpan>,
+{
+    let span = map.span();
+    map.state().alloc(WithSpan(value, span))
 }
