@@ -1,10 +1,17 @@
 #![allow(unused)]
-use std::{cell::RefCell, ops::Deref, path::Path};
+use std::{cell::RefCell, iter::Inspect, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    Parser, container::Container, error::Rich, extra::Full, input::Input, span::SimpleSpan,
+    Parser,
+    container::Container,
+    error::Rich,
+    extra::{Full, SimpleState},
+    input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
+    inspector::Inspector,
+    span::SimpleSpan,
 };
+use lexer::Token;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -23,7 +30,7 @@ impl<T, const N: usize> Default for SmallCollector<T, N> {
     }
 }
 
-impl<T: Default, const N: usize> Container<T> for SmallCollector<T, N> {
+impl<T, const N: usize> Container<T> for SmallCollector<T, N> {
     fn with_capacity(n: usize) -> Self {
         Self(SmallVec::with_capacity(n))
     }
@@ -106,8 +113,15 @@ impl<'ctx> Context<'ctx> {
         Self::new(None, src.as_ref().to_string())
     }
 
-    pub fn alloc_str<S: AsRef<str>>(&self, src: S) -> &str {
-        self.arena.alloc_str(src.as_ref())
+    pub fn alloc<T>(&self, data: T) -> &T {
+        self.arena.alloc(data)
+    }
+
+    pub fn alloc_slice<T, I: IntoIterator<Item = T>>(&self, data: I) -> &[T]
+    where
+        I::IntoIter: ExactSizeIterator,
+    {
+        self.arena.alloc_slice_fill_iter(data)
     }
 
     fn new(input: Option<std::path::PathBuf>, src: String) -> Self {
@@ -131,4 +145,49 @@ impl<'ctx> Context<'ctx> {
         let qualifiers = self.arena.alloc_slice_fill_iter(qualifiers);
         QualifiedName(qualifiers, basename)
     }
+}
+
+type ParserExtra<'a> = chumsky::extra::Full<Rich<'a, lexer::Token<'a>>, &'a Context<'a>, ()>;
+
+impl<'src, I: Input<'src>> Inspector<'src, I> for &'src Context<'src> {
+    type Checkpoint = ();
+    #[inline(always)]
+    fn on_token(&mut self, _: &<I as Input<'src>>::Token) {}
+    #[inline(always)]
+    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {}
+    #[inline(always)]
+    fn on_rewind<'parse>(&mut self, _: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {}
+}
+
+fn map_alloc<'src, I, T>(
+    value: T,
+    map: &mut MapExtra<'src, '_, I, ParserExtra<'src>>,
+) -> &'src WithSpan<T>
+where
+    I: Input<'src, Token = lexer::Token<'src>, Span = SimpleSpan>,
+{
+    let span = map.span();
+    map.state().alloc(WithSpan(value, span))
+}
+
+fn qualified_name<'a, I>()
+-> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) => x
+    };
+    let prefix = ident
+        .then_ignore(just(Token::PathSep))
+        .repeated()
+        .collect::<SmallCollector<_, 4>>();
+
+    prefix.then(ident).map_with(|(prefix, basename), m| {
+        let state: &mut &'a Context<'a> = m.state();
+        let prefix = state.alloc_slice(prefix.0);
+        let name = QualifiedName(prefix, basename);
+        map_alloc(name, m)
+    })
 }

@@ -1,373 +1,254 @@
-use chumsky::{
-    IterParser, Parser,
-    container::Container,
-    error::Rich,
-    extra::{Full, SimpleState},
-    input::{Input, StrInput},
-    prelude::choice,
-    span::SimpleSpan,
-    text::{Char, digits},
-};
-use rug::{Complete, float::Round, ops::CompleteRound};
-use smallvec::SmallVec;
-
-use crate::syntax::SmallCollector;
+use std::convert::identity;
 
 use super::{Context, WithSpan};
+use chumsky::{
+    error::Rich,
+    input::{Input, Stream, ValueInput},
+    span::SimpleSpan,
+};
+use logos::{Lexer, Logos};
+use unescaper::unescape;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Token<'ctx> {
+#[derive(thiserror::Error, Debug, Clone, Default, PartialEq)]
+pub enum Error {
+    #[default]
+    #[error("Unknown token encountered")]
+    UnknownToken,
+    #[error("failed to parse integer: {0}")]
+    InvalidIntLiteral(#[from] rug::integer::ParseIntegerError),
+    #[error("failed to parse floating point: {0}")]
+    InvalidFloatLiteral(#[from] rug::float::ParseFloatError),
+    #[error("invalid escape sequence: {0}")]
+    InvalidEscapeSequence(String),
+    #[error("non-single character")]
+    NonSingleCharater(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Logos)]
+#[logos(error = Error)]
+#[logos(skip r"//[^\n]*")]
+#[logos(skip r"[ \t\r\n\f]+")]
+#[logos(skip r"/\*(?:[^*]|\*[^/])*\*/")]
+pub enum Token<'src> {
     // Builtin Types
+    #[token("i8")]
     I8,
+    #[token("i16")]
     I16,
+    #[token("i32")]
     I32,
+    #[token("i64")]
     I64,
+    #[token("i128")]
     I128,
+    #[token("u8")]
     U8,
+    #[token("u16")]
     U16,
+    #[token("u32")]
     U32,
+    #[token("u64")]
     U64,
+    #[token("u128")]
     U128,
+    #[token("f16")]
     F16,
+    #[token("bf16")]
     BF16,
+    #[token("f32")]
     F32,
+    #[token("f64")]
     F64,
+    #[token("f128")]
     F128,
+    #[token("str")]
     Str,
+    #[token("bool")]
     Bool,
+    #[token("char")]
     Char,
     // Keywords
+    #[token("if")]
     If,
+    #[token("then")]
     Then,
+    #[token("else")]
     Else,
+    #[token("fn")]
     Fn,
+    #[token("return")]
     Return,
+    #[token("yield")]
     Yield,
+    #[token("cond")]
     Cond,
+    #[token("region")]
     Region,
+    #[token("data")]
     Data,
+    #[token("match")]
     Match,
+    #[token("let")]
     Let,
     // Delimiters
+    #[token("(")]
     LParen,
+    #[token(")")]
     RParen,
+    #[token("[")]
     LSquare,
+    #[token("]")]
     RSquare,
+    #[token("{")]
     LBrace,
+    #[token("}")]
     RBrace,
     // Operators,
+    #[token("+")]
     Plus,
+    #[token("-")]
     Minus,
+    #[token("*")]
     Star,
+    #[token("/")]
     Slash,
+    #[token("%")]
     Percent,
+    #[token("^")]
     Caret,
+    #[token("!")]
     Not,
+    #[token("~")]
     Tilde,
+    #[token("&")]
     And,
+    #[token("|")]
     Or,
+    #[token("&&")]
     AndAnd,
+    #[token("||")]
     OrOr,
+    #[token("<<")]
     Shl,
+    #[token(">>")]
     Shr,
+    #[token("=")]
     Eq,
+    #[token("==")]
     EqEq,
+    #[token("!=")]
     Ne,
+    #[token(">")]
     Gt,
+    #[token("<")]
     Lt,
+    #[token(">=")]
     Ge,
+    #[token("<=")]
     Le,
+    #[token("@")]
     At,
+    #[token(".")]
     Dot,
+    #[token(",")]
     Comma,
+    #[token(";")]
     Semi,
+    #[token(":")]
     Colon,
+    #[token("::")]
     PathSep,
+    #[token("->")]
     RArrow,
+    #[token("<-")]
     LArrow,
+    #[token("=>")]
     FatArrow,
+    #[token("#")]
+    Sharp,
+    #[token("()")]
+    Unit,
     // Literals and Identifiers
+    #[regex(r"[+\-]?\d[\d_]*", decimal_integer_callback)]
+    #[regex(r"[+\-]?0x[\da-fA-F_]+", radix_integer_callback::<16>)]
+    #[regex(r"[+\-]?0o[0-8_]+", radix_integer_callback::<8>)]
+    #[regex(r"[+\-]?0b[01_]+", radix_integer_callback::<2>)]
     Int(rug::Integer),
+    #[regex(
+        r"[+\-]?([\d]+(\.\d*)|[\d]+(\.\d*)?([eE][+\-]?\d+))",
+        float_literal_callback
+    )]
+    #[regex(r"[+\-]?inf", float_literal_callback)]
+    #[regex(r"[+\-]?nan", float_literal_callback)]
     Float(rug::Float),
+    #[regex(r#""(?:[^"]|\\")*""#, string_literal_callback)]
     String(String),
-    Ident(&'ctx str),
+    #[regex(r#"'(?:[^']|\\')*'"#, char_literal_callback)]
     CharLit(char),
+    #[token("true", |_| true)]
+    #[token("false", |_| false)]
     Boolean(bool),
+    #[regex(r"\p{XID_Start}\p{XID_Continue}*")]
+    Ident(&'src str),
+    Error(Box<Error>),
 }
 
-type LexerExtra<'ctx> = Full<Rich<'ctx, char>, SimpleState<&'ctx Context<'ctx>>, ()>;
+fn decimal_integer_callback<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<rug::Integer, Error> {
+    lex.slice().parse().map_err(Into::into)
+}
 
-pub fn integer_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>>
-{
-    use chumsky::primitive::*;
-    fn integer_literal_with_radix<'ctx, const PREFIX: char, const RADIX: u32>()
-    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
-        use chumsky::prelude::*;
-        let body = chumsky::text::digits(RADIX)
-            .separated_by(just('_'))
-            .to_slice()
-            .try_map(|s: &str, span: SimpleSpan| {
-                rug::Integer::parse_radix(s, RADIX as i32)
-                    .map(|x| x.complete())
-                    .map_err(|e| Rich::custom(span, format!("failed to parse integer body {e}")))
+fn float_literal_callback<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<rug::Float, Error> {
+    use rug::ops::CompleteRound;
+    rug::Float::parse(lex.slice())
+        .map_err(Into::into)
+        .map(|x| x.complete(128))
+}
+
+fn string_literal_callback<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<String, Error> {
+    let slice = lex.slice();
+    let slice = &slice[1..slice.len() - 1];
+    unescape(slice).map_err(|x| Error::InvalidEscapeSequence(format!("{x}")))
+}
+
+fn char_literal_callback<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<char, Error> {
+    let slice = lex.slice();
+    let slice = &slice[1..slice.len() - 1];
+    unescape(slice)
+        .map_err(|x| Error::InvalidEscapeSequence(format!("{x}")))
+        .and_then(|x| {
+            let mut chars = x.chars();
+            match chars.next() {
+                Some(x) if chars.next().is_none() => Ok(x),
+                _ => Err(Error::NonSingleCharater(x)),
+            }
+        })
+}
+
+fn radix_integer_callback<'a, const RADIX: usize>(
+    lex: &mut Lexer<'a, Token<'a>>,
+) -> Result<rug::Integer, Error> {
+    let slice = lex.slice();
+    let skip = if slice.starts_with('+') || slice.starts_with('-') {
+        3
+    } else {
+        2
+    };
+    rug::Integer::parse_radix(&slice[skip..], RADIX as i32)
+        .map_err(Into::into)
+        .map(Into::into)
+        .map(|x: rug::Integer| if slice.starts_with('-') { -x } else { x })
+}
+
+impl Context<'_> {
+    pub fn token_stream(&self) -> impl ValueInput<Token = Token, Span = SimpleSpan> {
+        let iter = Token::lexer(&self.src)
+            .spanned()
+            .map(|(res, range)| match res {
+                Ok(tk) => (tk, range.into()),
+                Err(err) => (Token::Error(Box::new(err)), range.into()),
             });
-
-        let prefix = just('0').ignore_then(just(PREFIX));
-        prefix.ignore_then(body)
+        Stream::from_iter(iter).map((0..self.src.len()).into(), identity)
     }
-    fn decimal_integer_literal<'ctx>()
-    -> impl Parser<'ctx, &'ctx str, rug::Integer, LexerExtra<'ctx>> {
-        use chumsky::prelude::*;
-        chumsky::text::digits(10)
-            .separated_by(just('_'))
-            .to_slice()
-            .try_map(|s: &str, span: SimpleSpan| {
-                rug::Integer::parse(s)
-                    .map(|x| x.complete())
-                    .map_err(|e| Rich::custom(span, format!("failed to parse integer body {e}")))
-            })
-    }
-    let body = choice((
-        integer_literal_with_radix::<'b', 2>(),
-        integer_literal_with_radix::<'o', 8>(),
-        integer_literal_with_radix::<'x', 16>(),
-        decimal_integer_literal(),
-    ));
-    one_of(['+', '-'])
-        .repeated()
-        .at_most(1)
-        .collect::<SmallCollector<char, 1>>()
-        .then(body)
-        .map(|(op, body)| {
-            if op.0.is_empty() || op.0[0] == '+' {
-                body
-            } else {
-                -body
-            }
-        })
-}
-
-pub fn float_literal_lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, rug::Float, LexerExtra<'ctx>> {
-    use chumsky::prelude::*;
-    let optional_sign = one_of(['+', '-']).repeated().at_most(1);
-    let special = choice((just("nan"), just("inf"))).ignored();
-    let exponent = one_of(['e', 'E'])
-        .then(optional_sign)
-        .then(digits(10))
-        .ignored();
-    let a_exp = digits(10).then(exponent).ignored();
-    let a_dot_b_exp = digits(10)
-        .then(just('.'))
-        .then(digits(10))
-        .then(exponent.repeated().at_most(1))
-        .ignored();
-    let body = choice((special, a_exp, a_dot_b_exp));
-    optional_sign
-        .ignore_then(body)
-        .to_slice()
-        .try_map(|src, span| {
-            rug::Float::parse(src)
-                .map_err(|e| Rich::custom(span, "cannot parse floating point literal {e}"))
-                .map(|x| x.complete(128))
-        })
-}
-
-pub fn unqouted_char_literal_lexer<'ctx, const QUOTE: char>()
--> impl Parser<'ctx, &'ctx str, char, LexerExtra<'ctx>> {
-    use chumsky::prelude::*;
-    let unicode_digits = digits(16)
-        .at_most(6)
-        .to_slice()
-        .delimited_by(just('{'), just('}'))
-        .try_map(|x, span| {
-            u32::from_str_radix(x, 16)
-                .map_err(|e| {
-                    Rich::custom(
-                        span,
-                        format!("failed to convert unicode sequence as U32: {e}"),
-                    )
-                })
-                .and_then(|x| {
-                    char::from_u32(x)
-                        .ok_or_else(|| Rich::custom(span, "unicode value out of scope".to_string()))
-                })
-        });
-    let unicode_seq = just('u').ignore_then(unicode_digits);
-    let ch = |x: char, y: char| just(x).to(y);
-    let escaped_char = just('\\').ignore_then(choice((
-        unicode_seq,
-        ch('n', '\n'),
-        ch('r', '\r'),
-        ch('t', '\t'),
-        ch('b', '\u{08}'),
-        ch('f', '\u{0C}'),
-        ch('\\', '\\'),
-        ch('\'', '\''),
-        ch('"', '"'),
-    )));
-    escaped_char.or(any().and_is(just(QUOTE).or(just('\\')).not()))
-}
-
-pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ctx>> {
-    use chumsky::prelude::*;
-    let idents_like = chumsky::text::ident().map(|ident: &str| match ident {
-        "i8" => Token::I8,
-        "i16" => Token::I16,
-        "i32" => Token::I32,
-        "i64" => Token::I64,
-        "i128" => Token::I128,
-        "u8" => Token::U8,
-        "u16" => Token::U16,
-        "u32" => Token::U32,
-        "u64" => Token::U64,
-        "u128" => Token::U128,
-        "f16" => Token::F16,
-        "bf16" => Token::BF16,
-        "f32" => Token::F32,
-        "f64" => Token::F64,
-        "f128" => Token::F128,
-        "str" => Token::Str,
-        "bool" => Token::Bool,
-        "char" => Token::Char,
-        "if" => Token::If,
-        "then" => Token::Then,
-        "else" => Token::Else,
-        "fn" => Token::Fn,
-        "return" => Token::Return,
-        "yield" => Token::Yield,
-        "cond" => Token::Cond,
-        "region" => Token::Region,
-        "data" => Token::Data,
-        "match" => Token::Match,
-        "let" => Token::Let,
-        ident => Token::Ident(ident),
-    });
-    let integer = integer_literal_lexer().map(Token::Int);
-    let float = float_literal_lexer().map(Token::Float);
-    let char_lit = unqouted_char_literal_lexer::<'\''>()
-        .delimited_by(just('\''), just('\''))
-        .map(Token::CharLit);
-    let string_lit = unqouted_char_literal_lexer::<'\"'>()
-        .repeated()
-        .collect::<String>()
-        .delimited_by(just('\"'), just('\"'))
-        .map(Token::String);
-    let boolean_lit = just("true")
-        .to(Token::Boolean(true))
-        .or(just("false").to(Token::Boolean(false)));
-    macro_rules! dispatch {
-        ($($pattern:expr => $token:ident),+) => {
-            choice(($(just($pattern).to(Token::$token)),+))
-        };
-    }
-    let delimiter = dispatch! {
-        '(' => LParen,
-        ')' => RParen,
-        '[' => LSquare,
-        ']' => RSquare,
-        '{' => LBrace,
-        '}' => RBrace
-    };
-    let multi_operator = dispatch! {
-        "::" => PathSep,
-        "->" => RArrow,
-        "<-" => LArrow,
-        "=>" => FatArrow,
-        "<=" => Le,
-        ">=" => Ge,
-        "!=" => Ne,
-        "==" => EqEq,
-        ">>" => Shr,
-        "<<" => Shl,
-        "&&" => AndAnd,
-        "||" => OrOr
-    };
-    let operator = dispatch! {
-        '+'  => Plus,
-        '-'  => Minus,
-        '*'  => Star,
-        '/'  => Slash,
-        '%'  => Percent,
-        '^'  => Caret,
-        '~'  => Tilde,
-        '!'  => Not,
-        '&'  => And,
-        '|'  => Or,
-        '='  => Eq,
-        '<'  => Lt,
-        '>'  => Gt,
-        '@'  => At,
-        '.'  => Dot,
-        ',' => Comma,
-        ';' => Semi,
-        ':' => Colon
-    };
-    choice((
-        float,
-        integer,
-        boolean_lit,
-        idents_like,
-        char_lit,
-        string_lit,
-        delimiter,
-        multi_operator,
-        operator,
-    ))
-}
-
-pub fn lexer_stream<'ctx>()
--> impl IterParser<'ctx, &'ctx str, WithSpan<Token<'ctx>>, LexerExtra<'ctx>> {
-    use chumsky::prelude::*;
-    let single_line_comment = custom::<_, &str, _, LexerExtra<'ctx>>(|input| {
-        let pos = input.cursor();
-        let start = input.check(just("//"));
-        if start.is_ok() {
-            input.next();
-            input.next();
-            while input.peek().is_some() {
-                if input.check(chumsky::text::newline()).is_ok() {
-                    break;
-                }
-                input.next();
-            }
-            return Ok(());
-        }
-        Err(Rich::custom(
-            input.span_since(&pos),
-            "failed to parse comment",
-        ))
-    });
-    let multiline_comment = custom::<_, &str, _, LexerExtra<'ctx>>(|input| {
-        let pos = input.cursor();
-        let start = input.check(just("/*"));
-        if start.is_ok() {
-            input.next();
-            input.next();
-            while input.peek().is_some() {
-                if input.check(just("*/")).is_ok() {
-                    input.next();
-                    input.next();
-                    return Ok(());
-                }
-                input.next();
-            }
-            return Err(Rich::custom(
-                input.span_since(&pos),
-                "unclosed multiline comment",
-            ));
-        }
-        Err(Rich::custom(
-            input.span_since(&pos),
-            "failed to parse multiline comment",
-        ))
-    });
-    let comment = single_line_comment.or(multiline_comment).padded();
-    lexer()
-        .map_with(|tok, meta| WithSpan(tok, meta.span()))
-        .padded_by(comment.repeated())
-        .padded()
-        .recover_with(skip_then_retry_until(any().ignored(), end()))
-        .repeated()
 }
 
 #[cfg(test)]
@@ -377,23 +258,20 @@ mod test {
     use super::*;
     macro_rules! test_single_static {
         ($src:literal, $target:ident) => {
-            let context = Context::from_src($src);
-            let res = lexer().parse_with_state($src, &mut SimpleState(&context));
+            let res = Token::lexer($src).next().unwrap().unwrap();
             println!("{res:#?}");
-            assert_eq!(res.output().unwrap(), &Token::$target);
+            assert_eq!(res, Token::$target);
         };
         ($src:literal, $target:ident, $value:expr) => {
-            let context = Context::from_src($src);
-            let res = lexer().parse_with_state($src, &mut SimpleState(&context));
+            let res = Token::lexer($src).next().unwrap().unwrap();
             println!("{res:#?}");
-            assert_eq!(res.output().unwrap(), &Token::$target($value));
+            assert_eq!(res, Token::$target($value.into()));
         };
         ($src:literal, $target:ident => $lambda:expr) => {
-            let context = Context::from_src($src);
-            let res = lexer().parse_with_state($src, &mut SimpleState(&context));
+            let res = Token::lexer($src).next().unwrap().unwrap();
             println!("{res:#?}");
-            match res.output().unwrap() {
-                Token::$target(x) => assert!($lambda(x)),
+            match res {
+                Token::$target(ref x) => assert!($lambda(x)),
                 _ => panic!("unexpected token kind"),
             }
         };
@@ -417,20 +295,20 @@ mod test {
     }
     #[test]
     fn lexer_recognizes_string_literals() {
-        test_single_static!(r#""abc""#, String, "abc".to_string());
-        test_single_static!(r#""abc\"""#, String, "abc\"".to_string());
-        test_single_static!(
-            r#""😊😊😊123$$\n\t""#,
-            String,
-            "😊😊😊123$$\n\t".to_string()
-        );
+        test_single_static!(r#""abc""#, String, "abc");
+        test_single_static!(r#""abc\"""#, String, "abc\"");
+        test_single_static!(r#""😊😊😊123$$\n\t""#, String, "😊😊😊123$$\n\t");
     }
 
     #[test]
     fn lexer_recognizes_int_literals() {
-        test_single_static!("123", Int, "123".parse().unwrap());
-        test_single_static!("-123", Int, "-123".parse().unwrap());
-        test_single_static!("123_456_789", Int, "123_456_789".parse().unwrap());
+        test_single_static!("123", Int, rug::Integer::parse("123").unwrap());
+        test_single_static!("-123", Int, rug::Integer::parse("-123").unwrap());
+        test_single_static!(
+            "123_456_789",
+            Int,
+            rug::Integer::parse("123_456_789").unwrap()
+        );
         test_single_static!(
             "0x123_456_789_ABC",
             Int,
@@ -460,6 +338,7 @@ mod test {
 
     #[test]
     fn lexer_recognizes_float_literals() {
+        use rug::ops::CompleteRound;
         test_single_static!(
             "12.0",
             Float,
@@ -486,24 +365,27 @@ mod test {
             rug::Float::parse("+12.123E-12345").unwrap().complete(128)
         );
     }
+
     #[test]
     fn lexer_tokenizes_simple_input() {
-        const SRC: &'static str = r#"
-data Rbtree = Leaf | Branch(RbTree, i32, RbTree);
-// Get value of a red black tree
-fn value(t: RbTree) -> i32 {
-  match t {
-    RbTree::Leaf => 0, /* Return 0 if not defined */
-    RbTree::Branch(l, x, r) => x,
-  }
-}
+        const SRC: &str = r#"
+    data Rbtree = Leaf | Branch(RbTree, i32, RbTree);
+    // Get value of a red black tree
+    #[inline]
+    fn value(t: RbTree) -> i32 {
+      match t {
+        Leaf => 0, /* Return 0 if not defined */
+        Branch(l, x, r) => x,
+      }
+    }
+    #[inline]
+    fn foo() -> f64 {
+      3.1415926535
+    }
 "#;
-        let context = Context::from_src(SRC);
-        let res = lexer_stream()
-            .collect::<Vec<_>>()
-            .parse_with_state(SRC, &mut SimpleState(&context));
-        for i in res.unwrap() {
-            println!("{i:#?}");
+        let stream = Token::lexer(SRC).spanned();
+        for (i, s) in stream {
+            println!("{:?}", (i.unwrap(), s));
         }
     }
 }
