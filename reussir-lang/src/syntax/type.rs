@@ -22,8 +22,19 @@ pub enum Type<'ctx> {
         ret: TypePtr<'ctx>,
     },
     #[allow(clippy::enum_variant_names)]
-    TypeExpr(&'ctx WithSpan<QualifiedName<'ctx>>, &'ctx [TypePtr<'ctx>]),
+    TypeExpr {
+        name: &'ctx WithSpan<QualifiedName<'ctx>>,
+        args: &'ctx [TypePtr<'ctx>],
+        modifier: Modifier,
+    },
     //TODO: type variable
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Modifier {
+    None,
+    Unfrozen,
+    Frozen,
 }
 
 type TypePtr<'ctx> = &'ctx WithSpan<Type<'ctx>>;
@@ -177,16 +188,30 @@ where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
     P: Parser<'a, I, TypePtr<'a>, ParserExtra<'a>> + Clone,
 {
+    let modifier = just(Token::At)
+        .to(Modifier::Unfrozen)
+        .or(just(Token::Star).to(Modifier::Frozen))
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|x| x.0.first().copied().unwrap_or(Modifier::None));
+
     let application = toplevel
         .separated_by(just(Token::Comma))
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LSquare), just(Token::RSquare));
-    qualified_name()
+
+    modifier
+        .then(qualified_name())
         .then(application)
-        .map_with(|(name, app), m| {
+        .map_with(|((modifier, name), app), m| {
             let state: &'a Context<'a> = m.state();
             let args = state.alloc_slice(app.0);
-            let expr = Type::TypeExpr(name, args);
+            let expr = Type::TypeExpr {
+                name,
+                args,
+                modifier,
+            };
             map_alloc(expr, m)
         })
         .labelled("type expression")
@@ -301,11 +326,11 @@ mod test {
     #[test]
     fn it_parses_type_expr() {
         let ctx = Context::from_src(
-            "Vec[i32, std::Vec[i32], (), bool, f128, std::Vec[std::Vec[std::ds::foo[i32, i32, i32]]]]",
+            "Vec[i32, @std::Vec[i32], (), bool, f128, std::Vec[*std::Vec[std::ds::foo[i32, i32, i32]]]]",
         );
         let stream = ctx.token_stream();
         let res = r#type().parse_with_state(stream, &mut &ctx).unwrap();
-        assert!(matches!(res.0, Type::TypeExpr(..)));
+        assert!(matches!(res.0, Type::TypeExpr { .. }));
         println!("{:#?}", res)
     }
     #[test]
