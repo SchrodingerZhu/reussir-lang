@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ariadne = "0.5.0"
+logos = "0.15.0"
 rug = { version = "1.27.0", features = ["num-traits"] }
 rustc-hash = { version = "2.1.1", features = ["rand"] }
 smallvec = "2.0.0-alpha.10"
