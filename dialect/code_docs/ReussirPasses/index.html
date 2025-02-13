@@ -1,0 +1,58 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>ReussirPasses - ReuseIR</title><meta name=description content="Reuse Analysis in MLIR and Rust"><meta name=generator content="Hugo 0.119.0"><link href=https://SchrodingerZhu.github.io/ReuseIRindex.xml rel=alternate type=application/rss+xml><link rel=canonical href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirPasses/><link rel=stylesheet href=https://SchrodingerZhu.github.io/ReuseIR/css/theme.css><script src=https://use.fontawesome.com/releases/v5.0.6/js/all.js></script>
+<link rel=stylesheet href=https://SchrodingerZhu.github.io/ReuseIR/css/chroma.min.css><script src=https://cdn.jsdelivr.net/npm/jquery@3.3.1/dist/jquery.min.js></script>
+<script src=https://cdn.jsdelivr.net/npm/jquery.easing@1.4.1/jquery.easing.min.js></script>
+<script src=https://SchrodingerZhu.github.io/ReuseIR/js/bundle.js></script>
+<script type=text/javascript src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+<script type=text/x-mathjax-config>
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [['$', '$'] ],
+      displayMath: [ ['$$','$$'], ["\\[","\\]"] ]
+    }
+  });
+</script><link rel=apple-touch-icon sizes=180x180 href="/apple-touch-icon.png?v=1"><link rel=icon type=image/png sizes=32x32 href="/favicon-32x32.png?v=1"><link rel=icon type=image/png sizes=16x16 href="/favicon-16x16.png?v=1"><link rel=manifest href="/site.webmanifest?v=1"><link rel=mask-icon href="/safari-pinned-tab.svg?v=1" color=#3775e0><link rel="shortcut icon" href="/favicon.ico?v=1"><meta name=msapplication-TileColor content="#2d89ef"><meta name=theme-color content="#ffffff"><link rel=icon href=/favicon.svg type=image/svg+xml sizes=any><style>:root{}</style></head><body><div class=container><header><h1><div><img src=https://SchrodingerZhu.github.io/ReuseIR/reuseir-logo-40x40.png width=40px align=absmiddle>
+ReuseIR</div></h1><p class=description>Reuse Analysis in MLIR and Rust</p></header><div class=global-menu><nav><ul><li class=parent><a href=https://github.com/SchrodingerZhu/ReuseIR/issues>Issues<i class="fas fa-angle-right"></i></a><ul class=sub-menu><li class=child><a href=https://github.com/SchrodingerZhu/ReuseIR/issues/new/choose>Report issue</a></li></ul></li><li class=parent><a href=https://github.com/SchrodingerZhu/ReuseIR>Source<i class="fas fa-angle-right"></i></a><ul class=sub-menu><li class=child><a href=https://github.com/SchrodingerZhu/ReuseIR/tree/main/reuse-runtime>Runtime</a></li><li class=child><a href=https://github.com/SchrodingerZhu/ReuseIR/tree/main/reuse-frontend>Frontend</a></li><li class=child><a href=https://github.com/SchrodingerZhu/ReuseIR/tree/main/reuse-mlir>Dialect</a></li></ul></li><li><a href=https://github.com/SchrodingerZhu/ReuseIR/releases>Releases</a></li></ul></nav></div><div class=content-container><main><h1>ReussirPasses</h1><h3 id=-convert-reussir-to-llvm><code>-convert-reussir-to-llvm</code>&nbsp;<a class=headline-hash href=#-convert-reussir-to-llvm>¶</a></h3><p><em>Convert Low-level Reussir Operations to LLVM IR</em></p><p>This pass is serves as the last step in the Reussir pipeline. It converts
+all remaining low-level Reussir operations to LLVM IR.</p><pre tabindex=0><code>
+### `-reussir-acquire-release-fusion`
+
+_Fuse Reussir acquire and release Operations_
+
+This pass is used to fuse acquire and release operations.
+### `-reussir-closure-outlining`
+
+_Outlines Reussir Closures_
+
+This pass outlines closures and instantiates their virtual tables.
+### `-reussir-expand-control-flow`
+
+_Expand structured control flows for Reussir operations_
+
+This pass is used to expand control flows for Reussir operations.
+- reussir.token.ensure
+- reussir.token.free (with nullible token)
+- reussir.rc.release
+
+#### Options
+</code></pre><p>-outline-nested-release : Outline nested RC release operations</p><pre tabindex=0><code>### `-reussir-gen-freezable-vtable`
+
+_Generate vtables for freezable rc objects_
+
+This pass generates vtables for freezable rc objects.
+### `-reussir-infer-union-tag`
+
+_Infer union tags for Reussir operations_
+
+This pass is used to infer union tags for Reussir operations.
+### `-reussir-print-reuse-analysis`
+
+_Print Reuse Analysis_
+
+This pass is used to print the reuse analysis information.
+### `-reussir-token-reuse`
+
+_Apply reuse analysis to reuse token and recyle unused tokens_
+
+This pass is used to apply reuse analysis to reuse token and recyle unused tokens.
+</code></pre><div class=edit-meta><br><a href=https://github.com/SchrodingerZhu/ReuseIR/tree/main/reuse-www/edit/main/website/content/dialect/code_docs/ReussirPasses.md class=edit-page><i class="fas fa-pen-square"></i> Edit on GitHub</a></div><nav class=pagination><a class="nav nav-prev" href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirOps/ title=ReussirOps><i class="fas fa-arrow-left" aria-hidden=true></i> Prev - ReussirOps</a>
+<a class="nav nav-next" href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirTypes/ title=ReussirTypes>Next - ReussirTypes <i class="fas fa-arrow-right" aria-hidden=true></i></a></nav><footer><p class=powered>Powered by <a href=https://gohugo.io>Hugo</a>. Theme by <a href=https://themes.gohugo.io/hugo-theme-techdoc/>TechDoc</a>. Designed by <a href=https://github.com/thingsym/hugo-theme-techdoc>Thingsym</a>.</p></footer></main><div class=sidebar><nav class=slide-menu><ul><li><a href=https://SchrodingerZhu.github.io/ReuseIR>Home</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/runtime/>Runtime</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/frontend/>Frontend</a></li><li class="parent has-sub-menu"><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/>Dialect<span class="mark opened">-</span></a><ul class=sub-menu><li class="parent has-sub-menu"><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/>Code Documentation<span class="mark opened">-</span></a><ul class=sub-menu><li><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirCompositeLayoutInterface/>ReussirCompositeLayoutInterface</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirDialect/>ReussirDialect</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirMangleInterface/>ReussirMangleInterface</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirOps/>ReussirOps</a></li><li class=active><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirPasses/>ReussirPasses</a></li><li><a href=https://SchrodingerZhu.github.io/ReuseIR/dialect/code_docs/ReussirTypes/>ReussirTypes</a></li></ul></li></ul></li></ul></nav><div class=sidebar-footer></div></div></div><a href=# id=backtothetop-fixed class=backtothetop data-backtothetop-duration=600 data-backtothetop-easing=easeOutQuart data-backtothetop-fixed-fadein=1000 data-backtothetop-fixed-fadeout=1000 data-backtothetop-fixed-bottom=10 data-backtothetop-fixed-right=20><span class="fa-layers fa-fw"><i class="fas fa-circle"></i>
+<i class="fas fa-arrow-circle-up"></i></span></a></div></body></html>
