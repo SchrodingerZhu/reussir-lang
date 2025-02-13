@@ -86,6 +86,7 @@ pub enum Token<'ctx> {
     RArrow,
     LArrow,
     FatArrow,
+    Sharp,
     // Literals and Identifiers
     Int(rug::Integer),
     Float(rug::Float),
@@ -300,7 +301,8 @@ pub fn lexer<'ctx>() -> impl Parser<'ctx, &'ctx str, Token<'ctx>, LexerExtra<'ct
         '.'  => Dot,
         ',' => Comma,
         ';' => Semi,
-        ':' => Colon
+        ':' => Colon,
+        '#' => Sharp
     };
     choice((
         float.labelled("floating-point literal"),
@@ -490,10 +492,11 @@ mod test {
         const SRC: &'static str = r#"
 data Rbtree = Leaf | Branch(RbTree, i32, RbTree);
 // Get value of a red black tree
+#[inline]
 fn value(t: RbTree) -> i32 {
   match t {
-    RbTree::Leaf => 0, /* Return 0 if not defined */
-    RbTree::Branch(l, x, r) => x,
+    Leaf => 0, /* Return 0 if not defined */
+    Branch(l, x, r) => x,
   }
 }
 "#;
