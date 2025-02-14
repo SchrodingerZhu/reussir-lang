@@ -1,9 +1,9 @@
 #![allow(unused)]
 
-use super::lexer::Token;
 use super::Context;
-use super::{map_alloc, qualified_name, QualifiedName, WithSpan};
+use super::lexer::Token;
 use super::{ParserExtra, SmallCollector};
+use super::{QualifiedName, WithSpan, map_alloc, qualified_name};
 use chumsky::prelude::*;
 use chumsky::{container::Seq, input::ValueInput, span::SimpleSpan};
 use std::collections::hash_map::Entry;

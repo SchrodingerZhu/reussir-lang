@@ -1,6 +1,6 @@
 use super::lexer::Token;
 use super::r#type::TypePtr;
-use super::{map_alloc, Context, ParserExtra, WithSpan};
+use super::{Context, ParserExtra, WithSpan, map_alloc};
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
 use chumsky::input::{MapExtra, ValueInput};

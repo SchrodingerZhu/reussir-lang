@@ -3,19 +3,19 @@ use std::{cell::RefCell, iter::Inspect, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
+    Parser,
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
     input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
     inspector::Inspector,
     span::SimpleSpan,
-    Parser,
 };
 use lexer::Token;
-use r#type::Record;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
 use thiserror::Error;
+use r#type::Record;
 
 mod expr;
 mod func;
@@ -174,8 +174,8 @@ where
     map.state().alloc(WithSpan(value, span))
 }
 
-fn qualified_name<'a, I>(
-) -> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
+fn qualified_name<'a, I>()
+-> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
