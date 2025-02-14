@@ -1,10 +1,10 @@
 use super::lexer::Token;
-use super::{Context, ParserExtra, WithSpan, map_alloc};
+use super::r#type::TypePtr;
+use super::{map_alloc, Context, ParserExtra, WithSpan};
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
 use chumsky::input::{MapExtra, ValueInput};
 use chumsky::prelude::*;
-
 type ExprPtr<'ctx> = &'ctx WithSpan<Expr<'ctx>>;
 
 #[derive(Debug)]
@@ -12,8 +12,13 @@ pub enum Expr<'ctx> {
     Int(rug::Integer),
     Float(rug::Float),
     Boolean(bool),
+    Character(char),
+    /// String literal
+    String(&'ctx str),
     IfThenElse(ExprPtr<'ctx>, ExprPtr<'ctx>, ExprPtr<'ctx>),
-    Annotated(ExprPtr<'ctx> /* TODO: type ptr*/),
+    Let(WithSpan<&'ctx str>, Option<TypePtr<'ctx>>, ExprPtr<'ctx>),
+    /// Semicolon separated exprs
+    Sequence(&'ctx [ExprPtr<'ctx>]),
 }
 
 macro_rules! expr_parser {
@@ -30,7 +35,12 @@ expr_parser! {
         select! {
             Token::Int(x) => Expr::Int(x),
             Token::Float(x) => Expr::Float(x),
-            Token::Boolean(x) => Expr::Boolean(x)
+            Token::Boolean(x) => Expr::Boolean(x),
+            Token::CharLit(x) => Expr::Character(x),
+            Token::String(x) = m => {
+                let state : &&Context<'_> = m.state();
+                Expr::String(state.alloc_str(x))
+            }
         }
         .map_with(map_alloc)
     }
