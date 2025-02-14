@@ -1,7 +1,7 @@
 #![allow(unused)]
 
-use super::Context;
 use super::lexer::Token;
+use super::{Context, Ptr};
 use super::{ParserExtra, SmallCollector};
 use super::{QualifiedName, WithSpan, map_alloc, qualified_name};
 use chumsky::prelude::*;
@@ -37,7 +37,7 @@ pub enum Modifier {
     Frozen,
 }
 
-pub(crate) type TypePtr<'ctx> = &'ctx WithSpan<Type<'ctx>>;
+pub(crate) type TypePtr<'ctx> = Ptr<'ctx, Type<'ctx>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Int {
@@ -218,8 +218,8 @@ where
 }
 
 macro_rules! type_parser {
-    ($($name:ident => $body:block)+) => {
-        $(fn $name<'a, I>() -> impl Parser<'a, I, TypePtr<'a>, ParserExtra<'a>> + Clone
+    ($($vis:vis $name:ident => $body:block)+) => {
+        $($vis fn $name<'a, I>() -> impl Parser<'a, I, TypePtr<'a>, ParserExtra<'a>> + Clone
         where
             I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
         $body)+
@@ -277,7 +277,7 @@ type_parser! {
         just(Token::Not).to(Type::Never).map_with(map_alloc).labelled("never type")
     }
 
-    r#type => {
+    pub r#type => {
         recursive( |toplevel| {
             let func = func_type(toplevel.clone());
             let expr = type_expr(toplevel);

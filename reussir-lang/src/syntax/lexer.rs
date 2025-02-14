@@ -150,6 +150,8 @@ pub enum Token<'src> {
     At,
     #[token(".")]
     Dot,
+    #[token("..")]
+    DotDot,
     #[token(",")]
     Comma,
     #[token(";")]
