@@ -18,8 +18,8 @@ use thiserror::Error;
 use r#type::Record;
 
 mod expr;
-mod func;
 mod lexer;
+mod stmt;
 mod r#type;
 
 struct SmallCollector<T, const N: usize>(SmallVec<T, N>);
@@ -42,6 +42,8 @@ impl<T, const N: usize> Container<T> for SmallCollector<T, N> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T>(pub T, pub SimpleSpan);
+
+type Ptr<'ctx, T> = &'ctx WithSpan<T>;
 
 impl<T: PartialEq> PartialEq for WithSpan<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -115,6 +117,10 @@ impl<'ctx> Context<'ctx> {
 
     pub fn alloc<T>(&self, data: T) -> &T {
         self.arena.alloc(data)
+    }
+
+    pub fn alloc_str<S: AsRef<str>>(&self, data: S) -> &str {
+        self.arena.alloc_str(data.as_ref())
     }
 
     pub fn alloc_slice<T, I: IntoIterator<Item = T>>(&self, data: I) -> &[T]

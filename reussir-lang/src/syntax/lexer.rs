@@ -150,6 +150,8 @@ pub enum Token<'src> {
     At,
     #[token(".")]
     Dot,
+    #[token("..")]
+    DotDot,
     #[token(",")]
     Comma,
     #[token(";")]
@@ -190,6 +192,8 @@ pub enum Token<'src> {
     Boolean(bool),
     #[regex(r"\p{XID_Start}\p{XID_Continue}*")]
     Ident(&'src str),
+    #[token("_")]
+    Underscore,
     Error(Box<Error>),
 }
 
@@ -370,18 +374,16 @@ mod test {
     fn lexer_tokenizes_simple_input() {
         const SRC: &str = r#"
     data Rbtree = Leaf | Branch(RbTree, i32, RbTree);
+
     // Get value of a red black tree
     #[inline]
-    fn value(t: RbTree) -> i32 {
-      match t {
-        Leaf => 0, /* Return 0 if not defined */
-        Branch(l, x, r) => x,
-      }
+    fn value(t: RbTree) = match t {
+       Leaf => 0, /* Return 0 if not defined */
+       Branch(l, x, r) => x,
     }
+
     #[inline]
-    fn foo() -> f64 {
-      3.1415926535
-    }
+    fn foo() : f64 = 3.1415926535
 "#;
         let stream = Token::lexer(SRC).spanned();
         for (i, s) in stream {
