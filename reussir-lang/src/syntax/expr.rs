@@ -74,7 +74,11 @@ pub enum UnaryOp {
 #[derive(Debug)]
 pub enum Pattern<'ctx> {
     Wildcard,
-    Ctor(WithSpan<&'ctx str>, &'ctx [Ptr<'ctx, FieldBinding<'ctx>>]),
+    Ctor {
+        name: Ptr<'ctx, &'ctx str>,
+        fields: &'ctx [Ptr<'ctx, FieldBinding<'ctx>>],
+        discard: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -89,10 +93,43 @@ pub struct MatchExpr<'ctx> {
     cases: &'ctx [(Ptr<'ctx, Pattern<'ctx>>, ExprPtr<'ctx>)],
 }
 
+fn unamed_bindings<'a, I>()
+-> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    select! { Token::Ident(x) = m => WithSpan(x, m.span())  }
+        .separated_by(just(Token::Comma))
+        .collect::<SmallCollector<_, 4>>()
+        .map_with(|fields, m| -> &[&WithSpan<FieldBinding<'_>>] {
+            let state: &&Context<'_> = m.state();
+            let iter = fields.0.into_iter().enumerate().map(|(idx, rename)| {
+                let span = rename.1;
+                let binding = FieldBinding {
+                    target: WithSpan(FieldName::Idx(idx), span),
+                    rename: Some(rename),
+                };
+                state.alloc(WithSpan(binding, span))
+            });
+            state.alloc_slice(iter)
+        })
+}
+
+fn pattern<'a, I, P>(
+    toplevel: P,
+) -> impl Parser<'a, I, Ptr<'a, Pattern<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    just(Token::Underscore)
+        .to_span()
+        .map_with(|span, m| map_alloc(Pattern::Wildcard, m))
+}
+
 macro_rules! expr_parser {
 
     (standalone $vis:vis $name:ident $body:block) => {
-        fn $name<'a, I>() -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
+        $vis fn $name<'a, I>() -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
         where
             I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
         {
@@ -101,7 +138,7 @@ macro_rules! expr_parser {
     };
 
     (recursive $vis:vis $name:ident $body:expr) => {
-        fn $name<'a, I, P>(toplevel: P) -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
+        $vis fn $name<'a, I, P>(toplevel: P) -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
         where
             I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
             P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,

@@ -192,6 +192,8 @@ pub enum Token<'src> {
     Boolean(bool),
     #[regex(r"\p{XID_Start}\p{XID_Continue}*")]
     Ident(&'src str),
+    #[token("_")]
+    Underscore,
     Error(Box<Error>),
 }
 
