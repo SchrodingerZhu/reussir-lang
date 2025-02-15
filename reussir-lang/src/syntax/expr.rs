@@ -25,7 +25,7 @@ pub enum Expr<'ctx> {
     /// String literal
     String(&'ctx str),
     /// Call expression (can be either ctor call, function call or variable call, we do not support direct expr call for now (TODO))
-    Call(&'ctx WithSpan<QualifiedName<'ctx>>, &'ctx [ExprPtr<'ctx>]),
+    Call(Ptr<'ctx, QualifiedName<'ctx>>, &'ctx [ExprPtr<'ctx>]),
     /// If .. {} else {}
     IfThenElse(ExprPtr<'ctx>, ExprPtr<'ctx>, ExprPtr<'ctx>),
     /// Let binding
@@ -470,7 +470,8 @@ mod test {
         r"match x {
             BinTree::Leaf => 0,
             BinTree::Branch(l, v, r) => {
-              v + 1
+              let res : i64 = v + 1;
+              res * 5
             }
          }",
         expr,

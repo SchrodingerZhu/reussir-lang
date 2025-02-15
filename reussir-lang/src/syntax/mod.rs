@@ -18,8 +18,8 @@ use thiserror::Error;
 use r#type::Record;
 
 mod expr;
-mod func;
 mod lexer;
+mod stmt;
 mod r#type;
 
 struct SmallCollector<T, const N: usize>(SmallVec<T, N>);
