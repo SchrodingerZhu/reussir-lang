@@ -1,6 +1,8 @@
 use super::lexer::Token;
 use super::r#type::{FieldName, TypePtr, r#type};
-use super::{Context, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan, map_alloc};
+use super::{
+    Context, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan, map_alloc, qualified_name,
+};
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
 use chumsky::input::{MapExtra, ValueInput};
@@ -75,7 +77,7 @@ pub enum UnaryOp {
 pub enum Pattern<'ctx> {
     Wildcard,
     Ctor {
-        name: Ptr<'ctx, &'ctx str>,
+        name: Ptr<'ctx, QualifiedName<'ctx>>,
         bindings: &'ctx [Ptr<'ctx, FieldBinding<'ctx>>],
         discard: bool,
     },
@@ -146,7 +148,6 @@ fn ctor_pattern<'a, I>() -> impl Parser<'a, I, Ptr<'a, Pattern<'a>>, ParserExtra
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    let ident = select! { Token::Ident(x) = m => map_alloc(x, m)  };
     let discard = just(Token::DotDot)
         .repeated()
         .at_most(1)
@@ -164,7 +165,7 @@ where
         .at_most(1)
         .collect::<SmallCollector<_, 1>>()
         .map(|c| c.0.into_iter().next().unwrap_or((&[], false)));
-    ident
+    qualified_name()
         .then(bindings)
         .map_with(|(name, (bindings, discard)), m| {
             let state: &&Context = m.state();
@@ -316,6 +317,23 @@ expr_parser! {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
 
+    match_expr => |expr : P| {
+        let cases = pattern()
+            .then_ignore(just(Token::FatArrow))
+            .then(expr.clone())
+            .separated_by(just(Token::Comma))
+            .collect::<SmallCollector<_, 8>>()
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map_with(|c, m| {
+                let state : &&Context = m.state();
+                state.alloc_slice(c.0)
+            });
+        just(Token::Match)
+            .ignore_then(expr.clone())
+            .then(cases)
+            .map_with(|(value, cases), m| map_alloc(Expr::Match(MatchExpr{value, cases}), m))
+    };
+
     pub braced_expr_sequence => | expr : P | {
         expr
             .separated_by(just(Token::Semi))
@@ -339,6 +357,7 @@ expr_parser! {
                 if_then_else_expr(expr.clone()),
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
+                match_expr(expr.clone()),
                 parenthesised_expr(expr),
             ));
             pratt_expr(atom)
@@ -412,6 +431,13 @@ mod test {
     test_expr_parser!(it_parses_wildcard_pattern, "_", pattern, Pattern::Wildcard);
 
     test_expr_parser!(
+        it_parses_singleton_pattern,
+        "std::ds::A",
+        pattern,
+        Pattern::Ctor { .. }
+    );
+
+    test_expr_parser!(
         it_parses_braced_ctor_pattern,
         "Cons { head, tail : tl }",
         pattern,
@@ -427,15 +453,27 @@ mod test {
 
     test_expr_parser!(
         it_parses_parenthesised_ctor_pattern,
-        "Cons ( head, tl )",
+        "Tree::Cons ( head, tl )",
         pattern,
         Pattern::Ctor { .. }
     );
 
     test_expr_parser!(
         it_parses_parenthesised_ctor_pattern_with_discard,
-        "Leaf ( l, v, .. )",
+        "Tree::Leaf ( l, v, .. )",
         pattern,
         Pattern::Ctor { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_match_expr,
+        r"match x {
+            BinTree::Leaf => 0,
+            BinTree::Branch(l, v, r) => {
+              v + 1
+            }
+         }",
+        expr,
+        Expr::Match { .. }
     );
 }
