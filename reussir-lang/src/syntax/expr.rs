@@ -76,7 +76,7 @@ pub enum Pattern<'ctx> {
     Wildcard,
     Ctor {
         name: Ptr<'ctx, &'ctx str>,
-        fields: &'ctx [Ptr<'ctx, FieldBinding<'ctx>>],
+        bindings: &'ctx [Ptr<'ctx, FieldBinding<'ctx>>],
         discard: bool,
     },
 }
@@ -100,6 +100,7 @@ where
 {
     select! { Token::Ident(x) = m => WithSpan(x, m.span())  }
         .separated_by(just(Token::Comma))
+        .allow_trailing()
         .collect::<SmallCollector<_, 4>>()
         .map_with(|fields, m| -> &[&WithSpan<FieldBinding<'_>>] {
             let state: &&Context<'_> = m.state();
@@ -115,15 +116,75 @@ where
         })
 }
 
-fn pattern<'a, I, P>(
-    toplevel: P,
-) -> impl Parser<'a, I, Ptr<'a, Pattern<'a>>, ParserExtra<'a>> + Clone
+fn named_bindings<'a, I>()
+-> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    let ident = select! { Token::Ident(x) = m => WithSpan(x, m.span())  };
+    let rename = just(Token::Colon)
+        .ignore_then(ident)
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|rename| rename.0.into_iter().next());
+    let binding = ident
+        .map(|x| WithSpan(FieldName::Name(x.0), x.1))
+        .then(rename)
+        .map_with(|(target, rename), m| map_alloc(FieldBinding { target, rename }, m));
+    binding
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .map_with(|fields, m| {
+            let state: &&Context = m.state();
+            state.alloc_slice(fields.0)
+        })
+}
+
+fn ctor_pattern<'a, I>() -> impl Parser<'a, I, Ptr<'a, Pattern<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    let ident = select! { Token::Ident(x) = m => map_alloc(x, m)  };
+    let discard = just(Token::DotDot)
+        .repeated()
+        .at_most(1)
+        .count()
+        .map(|cnt| cnt != 0);
+    let named_bindings = named_bindings()
+        .then(discard.clone())
+        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+    let unamed_bindings = unamed_bindings()
+        .then(discard)
+        .delimited_by(just(Token::LParen), just(Token::RParen));
+    let bindings = named_bindings
+        .or(unamed_bindings)
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|c| c.0.into_iter().next().unwrap_or((&[], false)));
+    ident
+        .then(bindings)
+        .map_with(|(name, (bindings, discard)), m| {
+            let state: &&Context = m.state();
+            let ctor = Pattern::Ctor {
+                name,
+                bindings,
+                discard,
+            };
+            map_alloc(ctor, m)
+        })
+}
+
+fn pattern<'a, I>() -> impl Parser<'a, I, Ptr<'a, Pattern<'a>>, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
     just(Token::Underscore)
         .to_span()
         .map_with(|span, m| map_alloc(Pattern::Wildcard, m))
+        .or(ctor_pattern())
 }
 
 macro_rules! expr_parser {
@@ -289,75 +350,92 @@ expr_parser! {
 mod test {
     use super::*;
 
-    #[test]
-    fn it_parses_primitive_exprs() {
-        let ctx = Context::from_src("123");
-        let stream = ctx.token_stream();
-        let res = primitive().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Int(..)));
+    macro_rules! test_expr_parser {
+        ($name:ident, $src:literal, $parser:ident, $pattern:pat) => {
+            #[test]
+            fn $name() {
+                let ctx = Context::from_src($src);
+                let stream = ctx.token_stream();
+                let res = $parser().parse_with_state(stream, &mut &ctx).unwrap();
+                println!("{:#?}", res);
+                assert!(matches!(res.0, $pattern));
+            }
+        };
     }
 
-    #[test]
-    fn it_parses_if_then_else_expr() {
-        let ctx = Context::from_src("if true { 123 } else { 456 }");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::IfThenElse(..)));
-    }
+    test_expr_parser!(it_parses_primitive_exprs, "123", primitive, Expr::Int(..));
 
-    #[test]
-    fn it_parses_annotated_let_expr() {
-        let ctx = Context::from_src("let x : f64 = 1e10");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Let(..)));
-    }
+    test_expr_parser!(
+        it_parses_if_then_else_expr,
+        "if true { 123 } else { 456 }",
+        expr,
+        Expr::IfThenElse(..)
+    );
 
-    #[test]
-    fn it_parses_simple_let_expr() {
-        let ctx = Context::from_src("let x : f64 = 1e10");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Let(..)));
-    }
+    test_expr_parser!(
+        it_parses_annotated_let_expr,
+        "let x : f64 = 1e10",
+        expr,
+        Expr::Let(..)
+    );
 
-    #[test]
-    fn it_parses_sequence_expr() {
-        let ctx = Context::from_src("{let x : f64 = 1e10; 123}");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Sequence(..)));
-    }
+    test_expr_parser!(
+        it_parses_simple_let_expr,
+        "let x : f64 = 1e10",
+        expr,
+        Expr::Let(..)
+    );
 
-    #[test]
-    fn it_parses_call_expr() {
-        let ctx = Context::from_src("x(1, 2, y, z, std::get(1, 4, \"str\"))");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Call(..)));
-    }
+    test_expr_parser!(
+        it_parses_sequence_expr,
+        "{let x : f64 = 1e10; 123}",
+        expr,
+        Expr::Sequence(..)
+    );
 
-    #[test]
-    fn it_parses_unary_expr() {
-        let ctx = Context::from_src("~(123)");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Unary(..)));
-    }
+    test_expr_parser!(
+        it_parses_call_expr,
+        r#"x(1, 2, y, z, std::get(1, 4, "str"))"#,
+        expr,
+        Expr::Call(..)
+    );
 
-    #[test]
-    fn it_parses_binary_expr() {
-        let ctx = Context::from_src("(1 + ~(123)) / 123 + 123 - 2 * 2 >= -10 - f(-x) && flag");
-        let stream = ctx.token_stream();
-        let res = expr().parse_with_state(stream, &mut &ctx).unwrap();
-        println!("{:#?}", res);
-        assert!(matches!(res.0, Expr::Binary(..)));
-    }
+    test_expr_parser!(it_parses_unary_expr, r#"~(123)"#, expr, Expr::Unary(..));
+
+    test_expr_parser!(
+        it_parses_binary_expr,
+        "(1 + ~(123)) / 123 + 123 - 2 * 2 >= -10 - f(-x) && flag",
+        expr,
+        Expr::Binary(..)
+    );
+
+    test_expr_parser!(it_parses_wildcard_pattern, "_", pattern, Pattern::Wildcard);
+
+    test_expr_parser!(
+        it_parses_braced_ctor_pattern,
+        "Cons { head, tail : tl }",
+        pattern,
+        Pattern::Ctor { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_braced_ctor_pattern_with_discard,
+        "Cons { head, tail : tl, .. }",
+        pattern,
+        Pattern::Ctor { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_parenthesised_ctor_pattern,
+        "Cons ( head, tl )",
+        pattern,
+        Pattern::Ctor { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_parenthesised_ctor_pattern_with_discard,
+        "Leaf ( l, v, .. )",
+        pattern,
+        Pattern::Ctor { .. }
+    );
 }
