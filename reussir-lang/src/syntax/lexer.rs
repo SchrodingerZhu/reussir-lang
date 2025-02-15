@@ -82,14 +82,16 @@ pub enum Token<'src> {
     Yield,
     #[token("cond")]
     Cond,
-    #[token("region")]
-    Region,
     #[token("data")]
     Data,
     #[token("match")]
     Match,
     #[token("let")]
     Let,
+    #[token("extern")]
+    Extern,
+    #[token("freeze")]
+    Freeze,
     // Delimiters
     #[token("(")]
     LParen,

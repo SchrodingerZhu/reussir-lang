@@ -1,8 +1,8 @@
 use super::lexer::Token;
-use super::r#type::{FieldName, TypePtr, r#type};
+use super::r#type::{TypePtr, r#type};
 use super::{
-    Attribute, Context, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan, attribute,
-    map_alloc, qualified_name,
+    Attribute, Context, FieldName, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan,
+    attribute, map_alloc, qualified_name, spanned_ident,
 };
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
@@ -11,6 +11,7 @@ use chumsky::prelude::*;
 
 pub type ExprPtr<'ctx> = Ptr<'ctx, Expr<'ctx>>;
 
+/// TODO: lambda expression
 #[derive(Debug)]
 pub enum Expr<'ctx> {
     /// Integer literal
@@ -43,6 +44,8 @@ pub enum Expr<'ctx> {
     Variable(Ptr<'ctx, QualifiedName<'ctx>>),
     /// Attributed expression (future-proof)
     Attributed(Ptr<'ctx, Attribute<'ctx>>, ExprPtr<'ctx>),
+    /// Freeze region
+    Freeze(ExprPtr<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -103,7 +106,7 @@ fn unamed_bindings<'a, I>()
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    select! { Token::Ident(x) = m => WithSpan(x, m.span())  }
+    spanned_ident()
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<SmallCollector<_, 4>>()
@@ -126,7 +129,7 @@ fn named_bindings<'a, I>()
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    let ident = select! { Token::Ident(x) = m => WithSpan(x, m.span())  };
+    let ident = spanned_ident();
     let rename = just(Token::Colon)
         .ignore_then(ident)
         .repeated()
@@ -253,7 +256,7 @@ expr_parser! {
             .collect::<SmallCollector<_, 1>>()
             .map(|x| x.0.into_iter().next());
         just(Token::Let)
-            .ignore_then(select! { Token::Ident(x) => x } . map_with(|x, m| WithSpan(x, m.span())))
+            .ignore_then(spanned_ident())
             .then(type_annotation)
             .then_ignore(just(Token::Eq))
             .then(expr)
@@ -286,6 +289,13 @@ expr_parser! {
             .map_with(|(name, args), m| {
                 map_alloc(Expr::Call(name, args), m)
             })
+    };
+
+    freeze_expr => |expr : P| {
+        just(Token::Freeze)
+            .ignore_then(expr)
+            .map(Expr::Freeze)
+            .map_with(map_alloc)
     };
 
     pratt_expr => |atom : P| {
@@ -363,6 +373,7 @@ expr_parser! {
     pub expr -> {
         recursive(|expr| {
             let atom = choice((
+                freeze_expr(expr.clone()),
                 call_expr(expr.clone()),
                 primitive(),
                 variable(),
@@ -503,5 +514,12 @@ mod test {
         r#"#[musttail(test = true, message = "123", blabla)] fib(12)"#,
         expr,
         Expr::Attributed { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_freeze_expr,
+        r#"freeze foo(a, b, c)"#,
+        expr,
+        Expr::Freeze { .. }
     );
 }
