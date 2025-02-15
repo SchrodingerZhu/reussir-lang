@@ -51,3 +51,6 @@ Cargo.lock
 
 # macOS
 .DS_Store
+
+# FreeBSD coredump
+*.core

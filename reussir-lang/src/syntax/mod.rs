@@ -11,6 +11,7 @@ use chumsky::{
     inspector::Inspector,
     span::SimpleSpan,
 };
+use expr::ExprPtr;
 use lexer::Token;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
@@ -196,4 +197,69 @@ where
         let name = QualifiedName(prefix, basename);
         map_alloc(name, m)
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct Attribute<'ctx> {
+    name: WithSpan<&'ctx str>,
+    arguments: &'ctx [Ptr<'ctx, AttributeArgument<'ctx>>],
+}
+
+#[derive(Debug, Clone)]
+pub enum AttributeArgument<'ctx> {
+    KwArg(WithSpan<&'ctx str>, ExprPtr<'ctx>),
+    Expr(ExprPtr<'ctx>),
+}
+
+fn attribute_argument<'a, I, P>(
+    expr: P,
+) -> impl Parser<'a, I, &'a WithSpan<AttributeArgument<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) = m => WithSpan(x, m.span())
+    };
+    let expr_argument = expr.clone().map(AttributeArgument::Expr);
+    let keyword_argument = ident
+        .then_ignore(just(Token::Eq))
+        .then(expr)
+        .map(|(k, e)| AttributeArgument::KwArg(k, e));
+    keyword_argument.or(expr_argument).map_with(map_alloc)
+}
+
+// expr is needed because this can be used also in expression where the expr parser is using the recursive reference.
+fn attribute<'a, I, P>(
+    expr: P,
+) -> impl Parser<'a, I, &'a WithSpan<Attribute<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) = m => WithSpan(x, m.span())
+    };
+    let arguments = attribute_argument(expr)
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<SmallCollector<_, 4>>()
+        .map_with(|c, m| {
+            let state: &&Context = m.state();
+            state.alloc_slice(c.0)
+        })
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|x| x.0.into_iter().next().unwrap_or(&[]));
+    just(Token::Sharp).ignore_then(
+        ident
+            .then(arguments)
+            .map(|(name, arguments)| Attribute { name, arguments })
+            .map_with(map_alloc)
+            .delimited_by(just(Token::LSquare), just(Token::RSquare)),
+    )
 }

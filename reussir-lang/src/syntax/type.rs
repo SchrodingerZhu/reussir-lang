@@ -86,13 +86,13 @@ pub struct Field<'ctx> {
     r#type: TypePtr<'ctx>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Ctor<'ctx> {
     name: &'ctx str,
     fields: &'ctx [Field<'ctx>],
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Record<'ctx> {
     name: WithSpan<QualifiedName<'ctx>>,
     ctors: &'ctx [Ctor<'ctx>],

@@ -1,14 +1,15 @@
 use super::lexer::Token;
 use super::r#type::{FieldName, TypePtr, r#type};
 use super::{
-    Context, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan, map_alloc, qualified_name,
+    Attribute, Context, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan, attribute,
+    map_alloc, qualified_name,
 };
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
 use chumsky::input::{MapExtra, ValueInput};
 use chumsky::prelude::*;
 
-type ExprPtr<'ctx> = Ptr<'ctx, Expr<'ctx>>;
+pub type ExprPtr<'ctx> = Ptr<'ctx, Expr<'ctx>>;
 
 #[derive(Debug)]
 pub enum Expr<'ctx> {
@@ -39,7 +40,9 @@ pub enum Expr<'ctx> {
     /// Unary expression
     Unary(WithSpan<UnaryOp>, ExprPtr<'ctx>),
     /// Variable
-    Variable(&'ctx str),
+    Variable(Ptr<'ctx, QualifiedName<'ctx>>),
+    /// Attributed expression (future-proof)
+    Attributed(Ptr<'ctx, Attribute<'ctx>>, ExprPtr<'ctx>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -234,9 +237,12 @@ expr_parser! {
                 let state : &&Context<'_> = m.state();
                 Expr::String(state.alloc_str(x))
             },
-            Token::Ident(x) => Expr::Variable(x),
         }
         .map_with(map_alloc)
+    };
+
+    variable -> {
+        qualified_name().map(Expr::Variable).map_with(map_alloc)
     };
 
     let_expr => | expr | {
@@ -317,6 +323,11 @@ expr_parser! {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
 
+    attributed_expr => |expr : P| {
+        let attr = attribute(expr.clone());
+        attr.then(expr).map(|(a, e)| Expr::Attributed(a, e)).map_with(map_alloc)
+    };
+
     match_expr => |expr : P| {
         let cases = pattern()
             .then_ignore(just(Token::FatArrow))
@@ -354,10 +365,12 @@ expr_parser! {
             let atom = choice((
                 call_expr(expr.clone()),
                 primitive(),
+                variable(),
                 if_then_else_expr(expr.clone()),
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
                 match_expr(expr.clone()),
+                attributed_expr(expr.clone()),
                 parenthesised_expr(expr),
             ));
             pratt_expr(atom)
@@ -476,5 +489,19 @@ mod test {
          }",
         expr,
         Expr::Match { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_attributed_expr,
+        r"#[musttail] fib(12)",
+        expr,
+        Expr::Attributed { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_attributed_expr_with_arguments,
+        r#"#[musttail(test = true, message = "123", blabla)] fib(12)"#,
+        expr,
+        Expr::Attributed { .. }
     );
 }
