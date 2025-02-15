@@ -74,7 +74,7 @@ pub enum UnaryOp {
 #[derive(Debug)]
 pub enum Pattern<'ctx> {
     Wildcard,
-    Ctor(&'ctx [Ptr<'ctx, FieldBinding<'ctx>>]),
+    Ctor(WithSpan<&'ctx str>, &'ctx [Ptr<'ctx, FieldBinding<'ctx>>]),
 }
 
 #[derive(Debug)]
