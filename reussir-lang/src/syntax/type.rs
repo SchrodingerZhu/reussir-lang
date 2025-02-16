@@ -68,94 +68,6 @@ pub enum Float {
     F64,
     F128,
 }
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum FieldName<'ctx> {
-    Idx(usize),
-    Name(&'ctx str),
-}
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum FieldKind {
-    Plain,
-    // TODO: should also track atomicity
-    LocallyMutable { is_frozen: bool },
-}
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Field<'ctx> {
-    name: FieldName<'ctx>,
-    kind: FieldKind,
-    r#type: TypePtr<'ctx>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Ctor<'ctx> {
-    name: &'ctx str,
-    fields: &'ctx [Field<'ctx>],
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct Record<'ctx> {
-    name: WithSpan<QualifiedName<'ctx>>,
-    ctors: &'ctx [Ctor<'ctx>],
-    is_rc_managed: bool,
-}
-
-impl<'ctx> super::Context<'ctx> {
-    pub fn new_record_in_context<I>(
-        &'ctx self,
-        basename: WithSpan<&'ctx str>,
-        ctors: I,
-        is_rc_managed: bool,
-        location: SimpleSpan,
-    ) -> bool
-    where
-        I: IntoIterator<Item = Ctor<'ctx>>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        let name = self.new_qualified_name(self.scope.iter().copied(), basename.0);
-        let name = WithSpan(name, basename.1);
-        match self.records.borrow_mut().entry(name.0) {
-            Entry::Occupied(occupied) => false,
-            Entry::Vacant(vacant) => {
-                let ctors = self.arena.alloc_slice_fill_iter(ctors);
-                let record = Record {
-                    name,
-                    ctors,
-                    is_rc_managed,
-                };
-                vacant.insert(WithSpan(self.arena.alloc(record), location));
-                true
-            }
-        }
-    }
-    pub fn new_record<I>(
-        &'ctx self,
-        name: WithSpan<QualifiedName<'ctx>>,
-        ctors: I,
-        is_rc_managed: bool,
-        location: SimpleSpan,
-    ) -> bool
-    where
-        I: IntoIterator<Item = Ctor<'ctx>>,
-        I::IntoIter: ExactSizeIterator,
-    {
-        match self.records.borrow_mut().entry(name.0) {
-            Entry::Occupied(occupied) => false,
-            Entry::Vacant(vacant) => {
-                let ctors = self.arena.alloc_slice_fill_iter(ctors);
-                let record = Record {
-                    name,
-                    ctors,
-                    is_rc_managed,
-                };
-                vacant.insert(WithSpan(self.arena.alloc(record), location));
-                true
-            }
-        }
-    }
-    pub fn lookup_record(&self, name: QualifiedName) -> Option<WithSpan<&Record>> {
-        self.records.borrow().get(&name).copied()
-    }
-}
 
 fn func_type<'a, I, P>(toplevel: P) -> impl Parser<'a, I, TypePtr<'a>, ParserExtra<'a>> + Clone
 where
@@ -194,12 +106,16 @@ where
         .repeated()
         .at_most(1)
         .collect::<SmallCollector<_, 1>>()
-        .map(|x| x.0.first().copied().unwrap_or(Modifier::None));
+        .map(|x| x.0.into_iter().next().unwrap_or(Modifier::None));
 
     let application = toplevel
         .separated_by(just(Token::Comma))
         .collect::<SmallCollector<_, 4>>()
-        .delimited_by(just(Token::LSquare), just(Token::RSquare));
+        .delimited_by(just(Token::LSquare), just(Token::RSquare))
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|x| x.0.into_iter().next().unwrap_or_default());
 
     modifier
         .then(qualified_name())

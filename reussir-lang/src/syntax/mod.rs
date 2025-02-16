@@ -3,19 +3,21 @@ use std::{cell::RefCell, iter::Inspect, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    Parser,
+    ParseResult, Parser,
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
-    input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
+    input::{Checkpoint, Cursor, Input, MapExtra, Stream, ValueInput},
     inspector::Inspector,
     span::SimpleSpan,
 };
+use expr::ExprPtr;
 use lexer::Token;
+use logos::Logos;
 use rustc_hash::FxHashMapRand;
 use smallvec::SmallVec;
+use stmt::StmtPtr;
 use thiserror::Error;
-use r#type::Record;
 
 mod expr;
 mod lexer;
@@ -70,13 +72,10 @@ impl<T> Deref for WithSpan<T> {
     }
 }
 
-type RecordStore<'ctx> = FxHashMapRand<QualifiedName<'ctx>, WithSpan<&'ctx Record<'ctx>>>;
-
 pub struct Context<'ctx> {
     arena: Bump,
     input: Option<std::path::PathBuf>,
     src: String,
-    records: RefCell<RecordStore<'ctx>>,
     scope: Vec<&'ctx str>,
 }
 
@@ -135,21 +134,27 @@ impl<'ctx> Context<'ctx> {
             arena: Bump::new(),
             input,
             src,
-            records: RefCell::new(FxHashMapRand::default()),
             scope: Vec::new(),
         }
     }
-    pub fn new_qualified_name<I>(
-        &'ctx self,
-        qualifiers: I,
-        basename: &'ctx str,
-    ) -> QualifiedName<'ctx>
+    fn new_qualified_name<I>(&'ctx self, qualifiers: I, basename: &'ctx str) -> QualifiedName<'ctx>
     where
         I: IntoIterator<Item = &'ctx str>,
         I::IntoIter: ExactSizeIterator,
     {
         let qualifiers = self.arena.alloc_slice_fill_iter(qualifiers);
         QualifiedName(qualifiers, basename)
+    }
+
+    pub fn parse(&'ctx self) -> ParseResult<&'ctx [StmtPtr<'ctx>], Rich<'ctx, Token<'ctx>>> {
+        use chumsky::prelude::*;
+        let mut this: &Self = self;
+        stmt::stmt()
+            .separated_by(just(Token::Semi))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .map(|x| self.alloc_slice(x))
+            .parse_with_state(self.token_stream(), &mut this)
     }
 }
 
@@ -196,4 +201,142 @@ where
         let name = QualifiedName(prefix, basename);
         map_alloc(name, m)
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct Attribute<'ctx> {
+    name: WithSpan<&'ctx str>,
+    arguments: &'ctx [Ptr<'ctx, AttributeArgument<'ctx>>],
+}
+
+#[derive(Debug, Clone)]
+pub enum AttributeArgument<'ctx> {
+    KwArg(WithSpan<&'ctx str>, ExprPtr<'ctx>),
+    Expr(ExprPtr<'ctx>),
+}
+
+fn attribute_argument<'a, I, P>(
+    expr: P,
+) -> impl Parser<'a, I, &'a WithSpan<AttributeArgument<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) = m => WithSpan(x, m.span())
+    };
+    let expr_argument = expr.clone().map(AttributeArgument::Expr);
+    let keyword_argument = ident
+        .then_ignore(just(Token::Eq))
+        .then(expr)
+        .map(|(k, e)| AttributeArgument::KwArg(k, e));
+    keyword_argument.or(expr_argument).map_with(map_alloc)
+}
+
+// expr is needed because this can be used also in expression where the expr parser is using the recursive reference.
+fn attribute<'a, I, P>(
+    expr: P,
+) -> impl Parser<'a, I, &'a WithSpan<Attribute<'a>>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+{
+    use chumsky::prelude::*;
+    let ident = select! {
+        Token::Ident(x) = m => WithSpan(x, m.span())
+    };
+    let arguments = attribute_argument(expr)
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<SmallCollector<_, 4>>()
+        .map_with(|c, m| {
+            let state: &&Context = m.state();
+            state.alloc_slice(c.0)
+        })
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|x| x.0.into_iter().next().unwrap_or(&[]));
+    just(Token::Sharp).ignore_then(
+        ident
+            .then(arguments)
+            .map(|(name, arguments)| Attribute { name, arguments })
+            .map_with(map_alloc)
+            .delimited_by(just(Token::LSquare), just(Token::RSquare)),
+    )
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum FieldName<'ctx> {
+    Idx(usize),
+    Name(&'ctx str),
+}
+
+fn spanned_ident<'a, I>() -> impl Parser<'a, I, WithSpan<&'a str>, ParserExtra<'a>> + Copy
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+    chumsky::select! { Token::Ident(x) = m => WithSpan(x, m.span()) }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn is_parses_example_program() {
+        let src = r#"
+data RbTree = Leaf | Branch(RbTree, i32, RbTree);
+
+#[plain] // not boxed by RC
+data Option[T] = None | Some(T);
+
+fn value_add_one(t : RbTree) : Option[i32] =
+   match t {
+     RbTree::Leaf => None,
+     RbTree::Branch(l, v, r) => Some(v + 1)
+   };
+
+
+"#;
+        let context = Context::from_src(src);
+        let ast = context.parse();
+        assert!(!ast.has_errors() && ast.has_output());
+        print!("{:#?}", ast.unwrap());
+    }
+
+    #[test]
+    fn is_parses_map_program() {
+        let src = r#"
+data RbTree[T] = Leaf | Branch(RbTree[T], i32, RbTree[T]);
+
+fn map[T, U](x : RbTree[T], f : fn(T) -> U) : RbTree[U] =
+   match t {
+     RbTree::Leaf => RbTree::Leaf,
+     RbTree::Branch(l, v, r) => {
+       let l = map(l, f);
+       let v = f(v);
+       let r = map(r, f);
+       RbTree::Branch(l, v, r)
+     }
+   };
+"#;
+        let context = Context::from_src(src);
+        let ast = context.parse();
+        assert!(!ast.has_errors() && ast.has_output());
+        print!("{:#?}", ast.unwrap());
+    }
+
+    #[test]
+    fn is_parses_lambda_program() {
+        let src = r#"
+fn curry[X, Y, Z]( f : fn (X, Y) -> Z ) : fn (X) -> fn(Y) -> Z =
+   | x | | y | f (x, y)
+"#;
+        let context = Context::from_src(src);
+        let ast = context.parse();
+        assert!(!ast.has_errors() && ast.has_output());
+        print!("{:#?}", ast.unwrap());
+    }
 }
