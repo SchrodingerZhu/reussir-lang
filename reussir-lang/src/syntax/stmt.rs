@@ -4,8 +4,8 @@ use chumsky::{input::ValueInput, prelude::*};
 use logos::Source;
 
 use super::{
-    attribute, expr::ExprPtr, lexer::Token, map_alloc, r#type::TypePtr, spanned_ident, Attribute,
-    Context, FieldName, ParserExtra, Ptr, SmallCollector, WithSpan,
+    Attribute, Context, FieldName, ParserExtra, Ptr, SmallCollector, WithSpan, attribute,
+    expr::ExprPtr, lexer::Token, map_alloc, spanned_ident, r#type::TypePtr,
 };
 
 #[derive(Debug)]

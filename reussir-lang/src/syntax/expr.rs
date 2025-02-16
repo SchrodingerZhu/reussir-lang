@@ -1,9 +1,9 @@
 use super::lexer::Token;
-use super::r#type::{r#type, TypePtr};
 use super::stmt::FuncParam;
+use super::r#type::{TypePtr, r#type};
 use super::{
-    attribute, map_alloc, qualified_name, spanned_ident, Attribute, Context, FieldName,
-    ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan,
+    Attribute, Context, FieldName, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan,
+    attribute, map_alloc, qualified_name, spanned_ident,
 };
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
@@ -12,7 +12,6 @@ use chumsky::prelude::*;
 
 pub type ExprPtr<'ctx> = Ptr<'ctx, Expr<'ctx>>;
 
-/// TODO: lambda expression
 #[derive(Debug)]
 pub enum Expr<'ctx> {
     /// Integer literal
@@ -108,8 +107,8 @@ pub struct MatchExpr<'ctx> {
     cases: &'ctx [(Ptr<'ctx, Pattern<'ctx>>, ExprPtr<'ctx>)],
 }
 
-fn unamed_bindings<'a, I>(
-) -> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+fn unamed_bindings<'a, I>()
+-> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
@@ -131,8 +130,8 @@ where
         })
 }
 
-fn named_bindings<'a, I>(
-) -> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+fn named_bindings<'a, I>()
+-> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
