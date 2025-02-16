@@ -87,7 +87,7 @@ where
         .then_ignore(just(Token::RArrow))
         .then(toplevel)
         .map_with(|(list, ret), m| {
-            let state: &'a Context<'a> = m.state();
+            let state: &'a Context = m.state();
             let args = state.alloc_slice(list.0);
             let func = Type::Func { args, ret };
             map_alloc(func, m)
@@ -121,7 +121,7 @@ where
         .then(qualified_name())
         .then(application)
         .map_with(|((modifier, name), app), m| {
-            let state: &'a Context<'a> = m.state();
+            let state: &'a Context = m.state();
             let args = state.alloc_slice(app.0);
             let expr = Type::TypeExpr {
                 name,

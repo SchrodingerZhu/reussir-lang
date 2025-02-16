@@ -245,7 +245,7 @@ fn radix_integer_callback<'a, const RADIX: usize>(
         .map(|x: rug::Integer| if slice.starts_with('-') { -x } else { x })
 }
 
-impl Context<'_> {
+impl Context {
     pub fn token_stream(&self) -> impl ValueInput<Token = Token, Span = SimpleSpan> {
         let iter = Token::lexer(&self.src)
             .spanned()
