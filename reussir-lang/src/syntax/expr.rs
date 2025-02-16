@@ -1,8 +1,9 @@
 use super::lexer::Token;
-use super::r#type::{TypePtr, r#type};
+use super::r#type::{r#type, TypePtr};
+use super::stmt::FuncParam;
 use super::{
-    Attribute, Context, FieldName, ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan,
-    attribute, map_alloc, qualified_name, spanned_ident,
+    attribute, map_alloc, qualified_name, spanned_ident, Attribute, Context, FieldName,
+    ParserExtra, Ptr, QualifiedName, SmallCollector, WithSpan,
 };
 use chumsky::combinator::DelimitedBy;
 use chumsky::extra::SimpleState;
@@ -46,6 +47,12 @@ pub enum Expr<'ctx> {
     Attributed(Ptr<'ctx, Attribute<'ctx>>, ExprPtr<'ctx>),
     /// Freeze region
     Freeze(ExprPtr<'ctx>),
+    /// Lambda expression
+    Lambda {
+        params: &'ctx [Ptr<'ctx, LambdaParam<'ctx>>],
+        ret: Option<TypePtr<'ctx>>,
+        body: ExprPtr<'ctx>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -101,8 +108,8 @@ pub struct MatchExpr<'ctx> {
     cases: &'ctx [(Ptr<'ctx, Pattern<'ctx>>, ExprPtr<'ctx>)],
 }
 
-fn unamed_bindings<'a, I>()
--> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+fn unamed_bindings<'a, I>(
+) -> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
@@ -124,8 +131,8 @@ where
         })
 }
 
-fn named_bindings<'a, I>()
--> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
+fn named_bindings<'a, I>(
+) -> impl Parser<'a, I, &'a [Ptr<'a, FieldBinding<'a>>], ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
@@ -226,6 +233,66 @@ macro_rules! expr_parser {
         expr_parser!{standalone $vis $name $body}
         expr_parser!{$($trailing)*}
     };
+}
+
+fn attributed_expr<'a, I, A, P>(
+    toplevel: P,
+    attr: A,
+) -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+    A: Parser<'a, I, Ptr<'a, Attribute<'a>>, ParserExtra<'a>> + Clone,
+{
+    attr.then(toplevel)
+        .map(|(a, e)| Expr::Attributed(a, e))
+        .map_with(map_alloc)
+}
+
+#[derive(Debug)]
+pub struct LambdaParam<'ctx> {
+    name: WithSpan<&'ctx str>,
+    r#type: Option<TypePtr<'ctx>>,
+}
+
+fn lambda_params<'a, I, T>(
+    opt_type: T,
+) -> impl Parser<'a, I, &'a [Ptr<'a, LambdaParam<'a>>], ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    T: Parser<'a, I, Option<TypePtr<'a>>, ParserExtra<'a>> + Clone,
+{
+    spanned_ident()
+        .then(opt_type)
+        .map(|(name, r#type)| LambdaParam { name, r#type })
+        .map_with(map_alloc)
+        .separated_by(just(Token::Comma))
+        .collect::<SmallCollector<_, 4>>()
+        .map_with(|c, m| {
+            let state: &&Context = m.state();
+            state.alloc_slice(c.0)
+        })
+        .delimited_by(just(Token::Or), just(Token::Or))
+}
+
+fn lambda_expr<'a, I, P>(toplevel: P) -> impl Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+    P: Parser<'a, I, ExprPtr<'a>, ParserExtra<'a>> + Clone,
+{
+    let r#type = super::r#type::r#type();
+    let opt_type = just(Token::Colon)
+        .ignore_then(r#type)
+        .repeated()
+        .at_most(1)
+        .collect::<SmallCollector<_, 1>>()
+        .map(|c| c.0.into_iter().next());
+    let params = lambda_params(opt_type.clone());
+    params
+        .then(opt_type)
+        .then(toplevel)
+        .map(|((params, ret), body)| Expr::Lambda { params, ret, body })
+        .map_with(map_alloc)
 }
 
 expr_parser! {
@@ -333,11 +400,6 @@ expr_parser! {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
 
-    attributed_expr => |expr : P| {
-        let attr = attribute(expr.clone());
-        attr.then(expr).map(|(a, e)| Expr::Attributed(a, e)).map_with(map_alloc)
-    };
-
     match_expr => |expr : P| {
         let cases = pattern()
             .then_ignore(just(Token::FatArrow))
@@ -372,6 +434,7 @@ expr_parser! {
 
     pub expr -> {
         recursive(|expr| {
+            let attr = attribute(expr.clone());
             let atom = choice((
                 freeze_expr(expr.clone()),
                 call_expr(expr.clone()),
@@ -381,7 +444,8 @@ expr_parser! {
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
                 match_expr(expr.clone()),
-                attributed_expr(expr.clone()),
+                attributed_expr(expr.clone(), attr.clone()),
+                lambda_expr(expr.clone()),
                 parenthesised_expr(expr),
             ));
             pratt_expr(atom)
@@ -521,5 +585,12 @@ mod test {
         r#"freeze foo(a, b, c)"#,
         expr,
         Expr::Freeze { .. }
+    );
+
+    test_expr_parser!(
+        it_parses_lambda_expr,
+        r#"| x : i32 | : i32 { x }"#,
+        expr,
+        Expr::Lambda { .. }
     );
 }

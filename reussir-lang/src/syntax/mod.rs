@@ -3,13 +3,13 @@ use std::{cell::RefCell, iter::Inspect, ops::Deref, path::Path};
 
 use bumpalo::Bump;
 use chumsky::{
-    ParseResult, Parser,
     container::Container,
     error::Rich,
     extra::{Full, SimpleState},
     input::{Checkpoint, Cursor, Input, MapExtra, Stream, ValueInput},
     inspector::Inspector,
     span::SimpleSpan,
+    ParseResult, Parser,
 };
 use expr::ExprPtr;
 use lexer::Token;
@@ -181,8 +181,8 @@ where
     map.state().alloc(WithSpan(value, span))
 }
 
-fn qualified_name<'a, I>()
--> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
+fn qualified_name<'a, I>(
+) -> impl Parser<'a, I, &'a WithSpan<QualifiedName<'a>>, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
@@ -321,6 +321,18 @@ fn map[T, U](x : RbTree[T], f : fn(T) -> U) : RbTree[U] =
        RbTree::Branch(l, v, r)
      }
    };
+"#;
+        let context = Context::from_src(src);
+        let ast = context.parse();
+        assert!(!ast.has_errors() && ast.has_output());
+        print!("{:#?}", ast.unwrap());
+    }
+
+    #[test]
+    fn is_parses_lambda_program() {
+        let src = r#"
+fn curry[X, Y, Z]( f : fn (X, Y) -> Z ) : fn (X) -> fn(Y) -> Z =
+   | x | | y | f (x, y)
 "#;
         let context = Context::from_src(src);
         let ast = context.parse();

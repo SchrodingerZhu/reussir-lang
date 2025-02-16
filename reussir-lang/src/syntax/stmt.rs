@@ -4,8 +4,8 @@ use chumsky::{input::ValueInput, prelude::*};
 use logos::Source;
 
 use super::{
-    Attribute, Context, FieldName, ParserExtra, Ptr, SmallCollector, WithSpan, attribute,
-    expr::ExprPtr, lexer::Token, map_alloc, spanned_ident, r#type::TypePtr,
+    attribute, expr::ExprPtr, lexer::Token, map_alloc, r#type::TypePtr, spanned_ident, Attribute,
+    Context, FieldName, ParserExtra, Ptr, SmallCollector, WithSpan,
 };
 
 #[derive(Debug)]
@@ -274,7 +274,7 @@ where
         .map_with(map_alloc)
 }
 
-fn func_params<'a, I, A, T>(
+pub fn func_params<'a, I, A, T>(
     attr: A,
     r#type: T,
 ) -> impl Parser<'a, I, &'a [Ptr<'a, FuncParam<'a>>], ParserExtra<'a>> + Clone
