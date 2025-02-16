@@ -117,7 +117,7 @@ where
         .allow_trailing()
         .collect::<SmallCollector<_, 4>>()
         .map_with(|fields, m| -> &[&WithSpan<FieldBinding<'_>>] {
-            let state: &&Context<'_> = m.state();
+            let state: &&Context = m.state();
             let iter = fields.0.into_iter().enumerate().map(|(idx, rename)| {
                 let span = rename.1;
                 let binding = FieldBinding {
@@ -303,7 +303,7 @@ expr_parser! {
             Token::CharLit(x) => Expr::Character(x),
             Token::Unit => Expr::Unit,
             Token::String(x) = m => {
-                let state : &&Context<'_> = m.state();
+                let state : &&Context = m.state();
                 Expr::String(state.alloc_str(x))
             },
         }
@@ -346,7 +346,7 @@ expr_parser! {
             .collect::<SmallCollector<_, 8>>()
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map_with(|ex, m| {
-                let state : &&Context<'_> = m.state();
+                let state : &&Context = m.state();
                 state.alloc_slice(ex.0)
             })
             .or(just(Token::Unit).map(|_|{let x : &[ExprPtr] = &[]; x}));
@@ -422,7 +422,7 @@ expr_parser! {
             .collect::<SmallCollector<_, 8>>()
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
             .map_with(|ex, m| {
-                let state : &&Context<'_> = m.state();
+                let state : &&Context = m.state();
                 if ex.0.len() == 1 {
                     return ex.0.into_iter().next().unwrap();
                 }
