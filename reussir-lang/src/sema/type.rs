@@ -1,7 +1,7 @@
 #![allow(unused)]
 use super::Context;
 
-use crate::syntax::{QualifiedName, expr::ExprPtr, r#type as syn_type};
+use crate::syntax::{expr::ExprPtr, r#type as syn_type, QualifiedName};
 
 pub enum FreezeKind {
     NonFreezing,
