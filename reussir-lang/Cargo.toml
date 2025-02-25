@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 allocator-api2 = "0.2.21"
+archery = "1.2.1"
 ariadne = "0.5.0"
 gc-arena = { git = "https://github.com/SchrodingerZhu/gc-arena", features = ["hashbrown", "tracing", "allocator-api2"] }
 hashbrown = "0.15.2"
 logos = "0.15.0"
+rpds = "1.1.0"
 rug = { version = "1.27.0", features = ["num-traits"] }
 rustc-hash = { version = "2.1.1", features = ["rand"] }
 smallvec = "2.0.0-alpha.10"
