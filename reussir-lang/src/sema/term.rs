@@ -3,7 +3,7 @@ use std::{ops::Deref, rc::Rc};
 use super::{FieldName, UniqueName, Vec};
 use archery::RcK;
 use chumsky::span::SimpleSpan;
-use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
+use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
 use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
@@ -109,6 +109,67 @@ unsafe impl<'gc> Collect<'gc> for Closure<'gc> {
     }
 }
 
+impl std::fmt::Display for Term<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Term::Integer(_) => todo!(),
+            Term::Float(_) => todo!(),
+            Term::Str(_) => todo!(),
+            Term::Boolean(_) => todo!(),
+            Term::FuncCall {
+                target,
+                ty_args,
+                arguments,
+            } => todo!(),
+            Term::CtorCall {
+                target,
+                ty_args,
+                arguments,
+            } => todo!(),
+            Term::ClosureCall(gc, gc1) => {
+                write!(f, "({} {})", ***gc, ***gc1)
+            }
+            Term::Proj { value, field } => todo!(),
+            Term::Match {} => todo!(),
+            Term::Cast {} => todo!(),
+            Term::FuncAbs { target, ty_args } => todo!(),
+            Term::CtorAbs { target, ty_args } => todo!(),
+            Term::Lambda { binding, body } => {
+                write!(f, "(λ")?;
+                let mut binding = *binding;
+                while let List::Cons(hd, tail) = &*binding {
+                    write!(f, "{}", hd.0.0.0)?;
+                    binding = *tail;
+                    if !binding.is_empty() {
+                        write!(f, " ");
+                    }
+                }
+                write!(f, ".")?;
+                body.0.fmt(f)?;
+                write!(f, ")")
+            }
+            Term::Let {
+                name,
+                binding,
+                body,
+            } => todo!(),
+            Term::Seq(gc, gc1) => todo!(),
+            Term::IntTy(_) => todo!(),
+            Term::FloatTy(_) => todo!(),
+            Term::Pi { name, arg, body } => todo!(),
+            Term::Var(unique_name) => {
+                write!(f, "{}", unique_name.0.0.0)
+            }
+            Term::StrTy => todo!(),
+            Term::BooleanTy => todo!(),
+            Term::Universe => todo!(),
+            Term::MetaVar(unique_name) => todo!(),
+            Term::CheckVar => todo!(),
+            Term::Invalid => write!(f, "<invalid>"),
+        }
+    }
+}
+
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
@@ -203,11 +264,13 @@ unsafe impl<'gc> Collect<'gc> for EvalContext<'gc> {
 
 fn evaluate<'gc>(mc: &Mutation<'gc>, ctx: EvalContext<'gc>, term: TermPtr<'gc>) -> ValuePtr<'gc> {
     match &**term {
-        Term::Var(name) => ctx
-            .bindings
-            .get(name)
-            .copied()
-            .unwrap_or_else(|| Gc::new(mc, WithSpan(Value::Invalid, term.1))),
+        Term::Var(name) => ctx.bindings.get(name).copied().unwrap_or_else(|| {
+            tracing::error!(
+                "failed to resolve {name:?} in {:?}",
+                ctx.bindings.keys().collect::<std::vec::Vec<_>>()
+            );
+            Gc::new(mc, WithSpan(Value::Invalid, term.1))
+        }),
         Term::Universe => Gc::new(mc, WithSpan(Value::Universe, term.1)),
         Term::Let {
             name,
@@ -235,7 +298,7 @@ fn evaluate<'gc>(mc: &Mutation<'gc>, ctx: EvalContext<'gc>, term: TermPtr<'gc>) 
             mc,
             WithSpan(
                 Value::Pi {
-                    name: name.clone(),
+                    name: *name,
                     arg: evaluate(mc, ctx.clone(), *arg),
                     body: Closure {
                         variables: ctx.bindings,
@@ -287,7 +350,7 @@ fn evaluate<'gc>(mc: &Mutation<'gc>, ctx: EvalContext<'gc>, term: TermPtr<'gc>) 
 fn quote<'gc>(mc: &Mutation<'gc>, value: ValuePtr<'gc>) -> TermPtr<'gc> {
     match &**value {
         Value::Stuck(term) => *term,
-        Value::Var(unique_name) => Gc::new(mc, WithSpan(Term::Var(unique_name.clone()), value.1)),
+        Value::Var(unique_name) => Gc::new(mc, WithSpan(Term::Var(*unique_name), value.1)),
         Value::ClosureCall(lam, arg) => {
             let lam = quote(mc, *lam);
             let arg = quote(mc, *arg);
@@ -296,17 +359,17 @@ fn quote<'gc>(mc: &Mutation<'gc>, value: ValuePtr<'gc>) -> TermPtr<'gc> {
         Value::Universe => Gc::new(mc, WithSpan(Term::Universe, value.1)),
         Value::Pi { name, arg, body } => {
             let arg = quote(mc, *arg);
-            let var = Gc::new(mc, WithSpan(Value::Var(name.clone()), arg.1));
+            let var = Gc::new(mc, WithSpan(Value::Var(*name), arg.1));
             let env = EvalContext {
                 bindings: body.variables.clone(),
             }
-            .with(name.clone(), var);
+            .with(*name, var);
             let body = quote(mc, evaluate(mc, env, body.body));
             Gc::new(
                 mc,
                 WithSpan(
                     Term::Pi {
-                        name: name.clone(),
+                        name: *name,
                         arg,
                         body,
                     },
@@ -320,8 +383,8 @@ fn quote<'gc>(mc: &Mutation<'gc>, value: ValuePtr<'gc>) -> TermPtr<'gc> {
             };
             let span = value.1;
             let env = ListIter(*binding).fold(env, |acc: EvalContext, var| {
-                let value = Gc::new(mc, WithSpan(Value::Var(var.clone()), span));
-                acc.with(var.clone(), value)
+                let value = Gc::new(mc, WithSpan(Value::Var(*var), span));
+                acc.with(*var, value)
             });
             let body = quote(mc, evaluate(mc, env, body.body));
             Gc::new(
@@ -336,5 +399,70 @@ fn quote<'gc>(mc: &Mutation<'gc>, value: ValuePtr<'gc>) -> TermPtr<'gc> {
             )
         }
         Value::Invalid => Gc::new(mc, WithSpan(Term::Invalid, value.1)),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn lam<'a, F>(mc: &Mutation<'a>, name: &[&str], body: F) -> TermPtr<'a>
+    where
+        F: FnOnce(&Mutation<'a>, &[TermPtr<'a>]) -> TermPtr<'a>,
+    {
+        let fake_span = SimpleSpan::new(0, 0);
+        let names = name
+            .iter()
+            .copied()
+            .map(|name| UniqueName::new(mc, name, fake_span))
+            .collect::<std::vec::Vec<_>>();
+
+        let vars = names
+            .iter()
+            .map(|name| Gc::new(mc, WithSpan(Term::Var(*name), fake_span)))
+            .collect::<std::vec::Vec<_>>();
+
+        let binding = names
+            .iter()
+            .copied()
+            .rev()
+            .fold(List::nil(mc), |acc, x| List::cons(mc, x, acc));
+
+        Gc::new(
+            mc,
+            WithSpan(
+                Term::Lambda {
+                    binding,
+                    body: body(mc, &vars),
+                },
+                fake_span,
+            ),
+        )
+    }
+
+    fn app<'a>(mc: &Mutation<'a>, f: TermPtr<'a>, x: TermPtr<'a>) -> TermPtr<'a> {
+        let fake_span = SimpleSpan::new(0, 0);
+        Gc::new(mc, WithSpan(Term::ClosureCall(f, x), fake_span))
+    }
+
+    #[test]
+    fn it_normalizes_app() {
+        tracing_subscriber::fmt::init();
+        let mut arena = Arena::<Rootable![TermPtr<'_>]>::new(|mc| {
+            let identity = lam(mc, &["x"], |_, x| x[0]);
+            let fx = lam(mc, &["f", "x"], |mc, args| app(mc, args[0], args[1]));
+            let res = app(mc, fx, identity);
+            assert_eq!(res.to_string(), "((λf x.(f x)) (λx.x))");
+            res
+        });
+        arena.finish_cycle();
+        arena.mutate_root(|mc, root| {
+            let context = EvalContext {
+                bindings: Map::new_with_hasher_and_ptr_kind(FxRandomState::new()),
+            };
+            *root = quote(mc, evaluate(mc, context, *root));
+            assert_eq!(root.to_string(), "(λx.x)");
+        });
+        arena.finish_cycle();
     }
 }

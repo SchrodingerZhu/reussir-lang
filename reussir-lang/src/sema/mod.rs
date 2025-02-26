@@ -6,7 +6,7 @@ use std::{
 };
 
 use chumsky::span::SimpleSpan;
-use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
+use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
 use rustc_hash::{FxBuildHasher, FxRandomState};
 use smallvec::SmallVec;
 
@@ -86,7 +86,7 @@ mod test {
     }
 }
 
-#[derive(Copy, Clone, Collect, Eq, Debug)]
+#[derive(Copy, Clone, Collect, Eq)]
 #[collect(no_drop)]
 #[repr(transparent)]
 pub struct UniqueName<'gc>(Gc<'gc, Static<WithSpan<ustr::Ustr>>>);
@@ -95,14 +95,20 @@ impl<'gc> UniqueName<'gc> {
     fn new<T: Into<ustr::Ustr>>(mc: &Mutation<'gc>, name: T, span: SimpleSpan) -> Self {
         Self(Gc::new(mc, Static(WithSpan(name.into(), span))))
     }
-    fn fresh<T: Into<ustr::Ustr>>(mc: &Mutation<'gc>, span: SimpleSpan) -> Self {
+    fn fresh(mc: &Mutation<'gc>, span: SimpleSpan) -> Self {
         Self(Gc::new(mc, Static(WithSpan("$x".into(), span))))
     }
     fn span(&self) -> SimpleSpan {
-        self.0 .1
+        self.0.1
     }
     fn name(&self) -> ustr::Ustr {
-        *self.0 .0
+        *self.0.0
+    }
+}
+
+impl std::fmt::Debug for UniqueName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{:?}", ***self.0, Gc::as_ptr(self.0))
     }
 }
 
