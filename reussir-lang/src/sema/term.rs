@@ -112,10 +112,10 @@ unsafe impl<'gc> Collect<'gc> for Closure<'gc> {
 impl std::fmt::Display for Term<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Term::Integer(_) => todo!(),
-            Term::Float(_) => todo!(),
-            Term::Str(_) => todo!(),
-            Term::Boolean(_) => todo!(),
+            Term::Integer(x) => write!(f, "{}", **x),
+            Term::Float(x) => write!(f, "{}", **x),
+            Term::Str(x) => write!(f, "{x:?}"),
+            Term::Boolean(x) => write!(f, "{x}"),
             Term::FuncCall {
                 target,
                 ty_args,
