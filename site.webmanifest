@@ -1,0 +1,8 @@
+{
+    "name": "ReuseIR website",
+    "short_name": "ReuseIR",
+    "icons": [],
+    "theme_color": "#ffffff",
+    "background_color": "#ffffff",
+    "display": "standalone"
+}
