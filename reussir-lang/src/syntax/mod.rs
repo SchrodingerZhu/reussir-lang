@@ -45,13 +45,6 @@ impl<T, const N: usize> Container<T> for SmallCollector<T, N> {
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T>(pub T, pub SimpleSpan);
 
-unsafe impl<'a, T: gc_arena::Collect<'a>> gc_arena::Collect<'a> for WithSpan<T> {
-    #[inline]
-    fn trace<C: gc_arena::collect::Trace<'a>>(&self, cc: &mut C) {
-        self.0.trace(cc);
-    }
-}
-
 type Ptr<'ctx, T> = &'ctx WithSpan<T>;
 
 impl<T: PartialEq> PartialEq for WithSpan<T> {

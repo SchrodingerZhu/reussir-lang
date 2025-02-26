@@ -3,108 +3,89 @@ mod term;
 use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    rc::Rc,
 };
 
 use chumsky::span::SimpleSpan;
-use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
-use rustc_hash::{FxBuildHasher, FxRandomState};
+use rustc_hash::{FxBuildHasher, FxHashMapRand, FxRandomState};
 use smallvec::SmallVec;
+use ustr::Ustr;
 
 use crate::syntax::{self, WithSpan};
-use term::Term;
-type Ref<'gc, T> = Gc<'gc, T>;
-type RefCell<'gc, T> = Gc<'gc, lock::RefLock<T>>;
-type Cell<'gc, T> = Gc<'gc, lock::Lock<T>>;
-type HashMap<'gc, K, V> = hashbrown::HashMap<K, V, FxRandomState, MetricsAlloc<'gc>>;
-type Vec<'gc, T> = allocator_api2::vec::Vec<T, MetricsAlloc<'gc>>;
-type Box<'gc, T> = allocator_api2::boxed::Box<T, MetricsAlloc<'gc>>;
-type UStr = Static<ustr::Ustr>;
+use term::{Term, TermPtr};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Collect)]
-#[collect(require_static)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum FieldName {
     Idx(usize),
-    Name(UStr),
+    Name(Ustr),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Collect)]
-#[collect(no_drop)]
-pub struct QualifiedName<'gc>(Box<'gc, [UStr]>, UStr);
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct QualifiedName(Box<[Ustr]>, Ustr);
 
-impl<'gc> QualifiedName<'gc> {
-    pub fn new<'a>(mutator: &Mutation<'gc>, name: syntax::QualifiedName<'a>) -> Self {
-        let allocator = MetricsAlloc::new(mutator);
-        let mut vec = Vec::with_capacity_in(name.qualifier().len(), allocator);
-        vec.extend(
-            name.qualifier()
-                .iter()
-                .copied()
-                .map(ustr::ustr)
-                .map(UStr::from),
-        );
-        let basename = ustr::Ustr::from(name.basename()).into();
-        Self(vec.into_boxed_slice(), basename)
+impl QualifiedName {
+    pub fn new(name: syntax::QualifiedName) -> Self {
+        let qualifier = name.qualifier().iter().copied().map(ustr::ustr).collect();
+        let basename = ustr::Ustr::from(name.basename());
+        Self(qualifier, basename)
     }
 
-    pub fn qualifier(&self) -> &[UStr] {
+    pub fn qualifier(&self) -> &[Ustr] {
         &self.0
     }
 
-    pub fn basename(&self) -> &UStr {
+    pub fn basename(&self) -> &Ustr {
         &self.1
     }
 }
 
-#[derive(Clone, Collect)]
-#[collect(no_drop)]
-pub struct Context<'gc> {
-    functions: HashMap<'gc, QualifiedName<'gc>, Ref<'gc, Term<'gc>>>,
+#[derive(Clone)]
+pub struct Context {
+    functions: FxHashMapRand<QualifiedName, TermPtr>,
 }
 
-impl<'gc> Context<'gc> {
-    pub fn new(mutator: &Mutation<'gc>) -> Ref<'gc, Self> {
-        let alloc = MetricsAlloc::new(mutator);
-        let functions = HashMap::with_hasher_in(FxRandomState::new(), alloc);
-        Gc::new(mutator, Self { functions })
+impl Context {
+    pub fn new() -> Self {
+        Self {
+            functions: Default::default(),
+        }
     }
 }
 
-type CtxRef<'gc> = Ref<'gc, Context<'gc>>;
-#[derive(Copy, Clone, Collect, Eq)]
-#[collect(no_drop)]
+#[derive(Clone, Eq)]
 #[repr(transparent)]
-pub struct UniqueName<'gc>(Gc<'gc, Static<WithSpan<ustr::Ustr>>>);
+pub struct UniqueName(Rc<WithSpan<ustr::Ustr>>);
 
-impl<'gc> UniqueName<'gc> {
-    fn new<T: Into<ustr::Ustr>>(mc: &Mutation<'gc>, name: T, span: SimpleSpan) -> Self {
-        Self(Gc::new(mc, Static(WithSpan(name.into(), span))))
+impl UniqueName {
+    fn new<T: Into<ustr::Ustr>>(name: T, span: SimpleSpan) -> Self {
+        Self(Rc::new(WithSpan(name.into(), span)))
     }
-    fn fresh(mc: &Mutation<'gc>, span: SimpleSpan) -> Self {
-        Self(Gc::new(mc, Static(WithSpan("$x".into(), span))))
+    fn fresh(span: SimpleSpan) -> Self {
+        Self(Rc::new(WithSpan("$x".into(), span)))
     }
     fn span(&self) -> SimpleSpan {
         self.0.1
     }
     fn name(&self) -> ustr::Ustr {
-        *self.0.0
+        self.0.0
     }
 }
 
-impl std::fmt::Debug for UniqueName<'_> {
+impl std::fmt::Debug for UniqueName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{:?}", ***self.0, Gc::as_ptr(self.0))
+        write!(f, "{}@{:?}", **self.0, Rc::as_ptr(&self.0))
     }
 }
 
-impl PartialEq for UniqueName<'_> {
+impl PartialEq for UniqueName {
     fn eq(&self, other: &Self) -> bool {
-        Gc::ptr_eq(self.0, other.0)
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl std::hash::Hash for UniqueName<'_> {
+impl std::hash::Hash for UniqueName {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Gc::as_ptr(self.0).hash(state);
+        Rc::as_ptr(&self.0).hash(state);
     }
 }
 
@@ -113,12 +94,7 @@ mod test {
     use super::*;
     #[test]
     fn it_creates_qualified_name() {
-        _ = tracing_subscriber::fmt::try_init();
         let fake_name = syntax::QualifiedName::new(&["std", "test"], "test");
-        let mut arena = Arena::<Rootable![CtxRef<'_>]>::new(|mc| Context::new(mc));
-        arena.mutate(|mc, _ctx| {
-            let name = QualifiedName::new(mc, fake_name);
-        });
-        arena.finish_cycle();
+        _ = QualifiedName::new(fake_name);
     }
 }
