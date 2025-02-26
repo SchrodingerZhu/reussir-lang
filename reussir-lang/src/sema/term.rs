@@ -3,7 +3,7 @@ use std::{ops::Deref, rc::Rc};
 use super::{FieldName, UniqueName, Vec};
 use archery::RcK;
 use chumsky::span::SimpleSpan;
-use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
+use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
 use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
@@ -138,7 +138,7 @@ impl std::fmt::Display for Term<'_> {
                 write!(f, "(λ")?;
                 let mut binding = *binding;
                 while let List::Cons(hd, tail) = &*binding {
-                    write!(f, "{}", hd.0.0.0)?;
+                    write!(f, "{}", hd.0 .0 .0)?;
                     binding = *tail;
                     if !binding.is_empty() {
                         write!(f, " ");
@@ -158,7 +158,7 @@ impl std::fmt::Display for Term<'_> {
             Term::FloatTy(_) => todo!(),
             Term::Pi { name, arg, body } => todo!(),
             Term::Var(unique_name) => {
-                write!(f, "{}", unique_name.0.0.0)
+                write!(f, "{}", unique_name.0 .0 .0)
             }
             Term::StrTy => todo!(),
             Term::BooleanTy => todo!(),
@@ -447,7 +447,7 @@ mod test {
 
     #[test]
     fn it_normalizes_app() {
-        tracing_subscriber::fmt::init();
+        _ = tracing_subscriber::fmt::try_init();
         let mut arena = Arena::<Rootable![TermPtr<'_>]>::new(|mc| {
             let identity = lam(mc, &["x"], |_, x| x[0]);
             let fx = lam(mc, &["f", "x"], |mc, args| app(mc, args[0], args[1]));

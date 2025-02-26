@@ -6,7 +6,7 @@ use std::{
 };
 
 use chumsky::span::SimpleSpan;
-use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
+use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
 use rustc_hash::{FxBuildHasher, FxRandomState};
 use smallvec::SmallVec;
 
@@ -70,22 +70,6 @@ impl<'gc> Context<'gc> {
 }
 
 type CtxRef<'gc> = Ref<'gc, Context<'gc>>;
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    #[test]
-    fn it_creates_qualified_name() {
-        tracing_subscriber::fmt::init();
-        let fake_name = syntax::QualifiedName::new(&["std", "test"], "test");
-        let mut arena = Arena::<Rootable![CtxRef<'_>]>::new(|mc| Context::new(mc));
-        arena.mutate(|mc, _ctx| {
-            let name = QualifiedName::new(mc, fake_name);
-        });
-        arena.finish_cycle();
-    }
-}
-
 #[derive(Copy, Clone, Collect, Eq)]
 #[collect(no_drop)]
 #[repr(transparent)]
@@ -99,10 +83,10 @@ impl<'gc> UniqueName<'gc> {
         Self(Gc::new(mc, Static(WithSpan("$x".into(), span))))
     }
     fn span(&self) -> SimpleSpan {
-        self.0.1
+        self.0 .1
     }
     fn name(&self) -> ustr::Ustr {
-        *self.0.0
+        *self.0 .0
     }
 }
 
@@ -121,5 +105,20 @@ impl PartialEq for UniqueName<'_> {
 impl std::hash::Hash for UniqueName<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         Gc::as_ptr(self.0).hash(state);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn it_creates_qualified_name() {
+        _ = tracing_subscriber::fmt::try_init();
+        let fake_name = syntax::QualifiedName::new(&["std", "test"], "test");
+        let mut arena = Arena::<Rootable![CtxRef<'_>]>::new(|mc| Context::new(mc));
+        arena.mutate(|mc, _ctx| {
+            let name = QualifiedName::new(mc, fake_name);
+        });
+        arena.finish_cycle();
     }
 }
