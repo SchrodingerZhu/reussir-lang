@@ -3,7 +3,7 @@ use std::{ops::Deref, rc::Rc};
 use super::{FieldName, UniqueName, Vec};
 use archery::RcK;
 use chumsky::span::SimpleSpan;
-use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
+use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
 use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
@@ -138,7 +138,7 @@ impl std::fmt::Display for Term<'_> {
                 write!(f, "(λ")?;
                 let mut binding = *binding;
                 while let List::Cons(hd, tail) = &*binding {
-                    write!(f, "{}", hd.0 .0 .0)?;
+                    write!(f, "{}", hd.0.0.0)?;
                     binding = *tail;
                     if !binding.is_empty() {
                         write!(f, " ");
@@ -158,7 +158,7 @@ impl std::fmt::Display for Term<'_> {
             Term::FloatTy(_) => todo!(),
             Term::Pi { name, arg, body } => todo!(),
             Term::Var(unique_name) => {
-                write!(f, "{}", unique_name.0 .0 .0)
+                write!(f, "{}", unique_name.0.0.0)
             }
             Term::StrTy => todo!(),
             Term::BooleanTy => todo!(),
@@ -348,6 +348,11 @@ fn evaluate<'gc>(mc: &Mutation<'gc>, ctx: EvalContext<'gc>, term: TermPtr<'gc>) 
 }
 
 fn quote<'gc>(mc: &Mutation<'gc>, value: ValuePtr<'gc>) -> TermPtr<'gc> {
+    let quote = |mc, value| {
+        stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
+            crate::sema::term::quote(mc, value)
+        })
+    };
     match &**value {
         Value::Stuck(term) => *term,
         Value::Var(unique_name) => Gc::new(mc, WithSpan(Term::Var(*unique_name), value.1)),
@@ -462,6 +467,50 @@ mod test {
             };
             *root = quote(mc, evaluate(mc, context, *root));
             assert_eq!(root.to_string(), "(λx.x)");
+        });
+        arena.finish_cycle();
+    }
+
+    #[test]
+    fn it_normalizes_thousand() {
+        _ = tracing_subscriber::fmt::try_init();
+        let mut arena = Arena::<Rootable![TermPtr<'_>]>::new(|mc| {
+            let five = lam(mc, &["s", "z"], |mc, args| {
+                let one = app(mc, args[0], args[1]);
+                let two = app(mc, args[0], one);
+                let three = app(mc, args[0], two);
+                let four = app(mc, args[0], three);
+                app(mc, args[0], four)
+            });
+            let add = lam(mc, &["a", "b", "s", "z"], |mc, args| {
+                let bsz = app(mc, app(mc, args[1], args[2]), args[3]);
+                let r#as = app(mc, args[0], args[2]);
+                app(mc, r#as, bsz)
+            });
+            let mul = lam(mc, &["a", "b", "s", "z"], |mc, args| {
+                let bs = app(mc, args[1], args[2]);
+                app(mc, app(mc, args[0], bs), args[3])
+            });
+            let ten = app(mc, app(mc, add, five), five);
+            let hundred = app(mc, app(mc, mul, ten), ten);
+            let thousand = app(mc, app(mc, mul, ten), hundred);
+            println!("{}", **thousand);
+            thousand
+        });
+        arena.finish_cycle();
+        let mut arena: Arena<Rootable![ValuePtr<'_>]> = arena.map_root(|mc, root| {
+            let context = EvalContext {
+                bindings: Map::new_with_hasher_and_ptr_kind(FxRandomState::new()),
+            };
+            evaluate(mc, context, root)
+        });
+        arena.finish_cycle();
+        let mut arena: Arena<Rootable![TermPtr<'_>]> = arena.map_root(|mc, root| {
+            let res = quote(mc, root);
+            let buf = res.to_string();
+            println!("{}", buf);
+            assert_eq!(buf.chars().filter(|x| *x == 's').count(), 1001);
+            res
         });
         arena.finish_cycle();
     }

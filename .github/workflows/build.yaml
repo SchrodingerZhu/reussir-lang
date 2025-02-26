@@ -43,7 +43,4 @@ jobs:
       - name: Run RustFmt
         run: cargo fmt --check
       - name: Run Rust Test
-        run: cargo test
-
-
-
+        run: env RUST_LOG=trace RUST_BACKTRACE=1 cargo test --release

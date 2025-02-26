@@ -6,7 +6,7 @@ use std::{
 };
 
 use chumsky::span::SimpleSpan;
-use gc_arena::{allocator_api::MetricsAlloc, lock, Arena, Collect, Gc, Mutation, Rootable, Static};
+use gc_arena::{Arena, Collect, Gc, Mutation, Rootable, Static, allocator_api::MetricsAlloc, lock};
 use rustc_hash::{FxBuildHasher, FxRandomState};
 use smallvec::SmallVec;
 
@@ -83,10 +83,10 @@ impl<'gc> UniqueName<'gc> {
         Self(Gc::new(mc, Static(WithSpan("$x".into(), span))))
     }
     fn span(&self) -> SimpleSpan {
-        self.0 .1
+        self.0.1
     }
     fn name(&self) -> ustr::Ustr {
-        *self.0 .0
+        *self.0.0
     }
 }
 
