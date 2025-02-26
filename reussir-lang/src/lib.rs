@@ -1,3 +1,2 @@
-#![feature(trait_alias)]
-mod core;
+mod sema;
 mod syntax;

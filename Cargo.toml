@@ -4,4 +4,3 @@ members = [ "reussir-lang","reussir-lang-legacy", "reussir-runtime"]
 
 [profile.release]
 lto = "thin"
-debug = true

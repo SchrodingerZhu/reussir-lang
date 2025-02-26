@@ -19,10 +19,10 @@ use smallvec::SmallVec;
 use stmt::StmtPtr;
 use thiserror::Error;
 
-mod expr;
+pub mod expr;
 mod lexer;
-mod stmt;
-mod r#type;
+pub mod stmt;
+pub mod r#type;
 
 struct SmallCollector<T, const N: usize>(SmallVec<T, N>);
 
@@ -72,17 +72,19 @@ impl<T> Deref for WithSpan<T> {
     }
 }
 
-pub struct Context<'ctx> {
+pub struct Context {
     arena: Bump,
     input: Option<std::path::PathBuf>,
     src: String,
-    scope: Vec<&'ctx str>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct QualifiedName<'ctx>(&'ctx [&'ctx str], &'ctx str);
 
-impl QualifiedName<'_> {
+impl<'a> QualifiedName<'a> {
+    pub fn new(qualifier: &'a [&'a str], basename: &'a str) -> Self {
+        Self(qualifier, basename)
+    }
     pub fn qualifier(&self) -> &[&str] {
         self.0
     }
@@ -102,7 +104,7 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-impl<'ctx> Context<'ctx> {
+impl Context {
     pub fn from_file<P: AsRef<Path>>(input: P) -> Result<Self> {
         let input = input.as_ref().to_owned();
         let src = std::fs::read_to_string(&input)?;
@@ -134,19 +136,18 @@ impl<'ctx> Context<'ctx> {
             arena: Bump::new(),
             input,
             src,
-            scope: Vec::new(),
         }
     }
-    fn new_qualified_name<I>(&'ctx self, qualifiers: I, basename: &'ctx str) -> QualifiedName<'ctx>
+    fn new_qualified_name<'a, I>(&'a self, qualifiers: I, basename: &'a str) -> QualifiedName<'a>
     where
-        I: IntoIterator<Item = &'ctx str>,
+        I: IntoIterator<Item = &'a str>,
         I::IntoIter: ExactSizeIterator,
     {
         let qualifiers = self.arena.alloc_slice_fill_iter(qualifiers);
         QualifiedName(qualifiers, basename)
     }
 
-    pub fn parse(&'ctx self) -> ParseResult<&'ctx [StmtPtr<'ctx>], Rich<'ctx, Token<'ctx>>> {
+    pub fn parse(&self) -> ParseResult<&[StmtPtr], Rich<Token>> {
         use chumsky::prelude::*;
         let mut this: &Self = self;
         stmt::stmt()
@@ -158,9 +159,9 @@ impl<'ctx> Context<'ctx> {
     }
 }
 
-type ParserExtra<'a> = chumsky::extra::Full<Rich<'a, lexer::Token<'a>>, &'a Context<'a>, ()>;
+type ParserExtra<'a> = chumsky::extra::Full<Rich<'a, lexer::Token<'a>>, &'a Context, ()>;
 
-impl<'src, I: Input<'src>> Inspector<'src, I> for &'src Context<'src> {
+impl<'src, I: Input<'src>> Inspector<'src, I> for &'src Context {
     type Checkpoint = ();
     #[inline(always)]
     fn on_token(&mut self, _: &<I as Input<'src>>::Token) {}
@@ -196,7 +197,7 @@ where
         .collect::<SmallCollector<_, 4>>();
 
     prefix.then(ident).map_with(|(prefix, basename), m| {
-        let state: &mut &'a Context<'a> = m.state();
+        let state: &mut &'a Context = m.state();
         let prefix = state.alloc_slice(prefix.0);
         let name = QualifiedName(prefix, basename);
         map_alloc(name, m)
