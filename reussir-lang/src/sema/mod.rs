@@ -1,18 +1,14 @@
 #![allow(unused)]
 mod term;
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
+use std::rc::Rc;
 
 use chumsky::span::SimpleSpan;
-use rustc_hash::{FxBuildHasher, FxHashMapRand, FxRandomState};
-use smallvec::SmallVec;
+use rustc_hash::FxHashMapRand;
 use ustr::Ustr;
 
 use crate::syntax::{self, WithSpan};
-use term::{Term, TermPtr};
+use term::TermPtr;
+mod norm;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum FieldName {
