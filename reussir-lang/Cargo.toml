@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 archery = "1.2.1"
 ariadne = "0.5.0"
+dynforest = "0.2.0"
 logos = "0.15.0"
 rpds = "1.1.0"
 rug = { version = "1.27.0", features = ["num-traits"] }

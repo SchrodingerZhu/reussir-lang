@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
 use super::{FieldName, QualifiedName, UniqueName};
+use dynforest::{Connection, Handle as ConnHandle};
+use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use ustr::Ustr;
 
 use crate::syntax::WithSpan;
@@ -79,6 +81,83 @@ pub enum Term {
     MetaVar(UniqueName),
     CheckVar,
     Invalid,
+}
+
+#[derive(Default)]
+struct Unifier<'a>(FxHashMapRand<&'a UniqueName, ConnHandle>);
+
+impl<'a> Unifier<'a> {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_handle(&mut self, target: &'a UniqueName) -> ConnHandle {
+        self.0.entry(target).or_default().clone()
+    }
+
+    fn with<R, F: for<'x> FnOnce(&'x mut Self) -> R>(
+        &mut self,
+        a: &'a UniqueName,
+        b: &'a UniqueName,
+        conti: F,
+    ) -> R {
+        let h0 = self.get_handle(a);
+        let h1 = self.get_handle(b);
+        let conn = h0.connect(&h1);
+        debug_assert!(conn.is_some());
+
+        conti(self)
+    }
+
+    fn is_equivalent(&mut self, a: &'a UniqueName, b: &'a UniqueName) -> bool {
+        let h0 = self.get_handle(a);
+        let h1 = self.get_handle(b);
+        h0.is_connected(&h1)
+    }
+}
+
+impl Term {
+    /// For alpha equivalence, unifier is simply a hashmap tracks variable mapping
+    fn alpha_equivalence_impl<'a, 'b>(&'a self, other: &'a Self, unifier: &mut Unifier<'b>) -> bool
+    where
+        'a: 'b,
+    {
+        match (self, other) {
+            (Term::Var(a), Term::Var(b)) => unifier.is_equivalent(a, b),
+            (Term::Integer(a), Term::Integer(b)) => a == b,
+            (
+                Term::Lambda {
+                    binding: va,
+                    body: ba,
+                },
+                Term::Lambda {
+                    binding: vb,
+                    body: bb,
+                },
+            ) => unifier.with(va, vb, |unifier| ba.alpha_equivalence_impl(bb, unifier)),
+            (
+                Term::Pi {
+                    name: na,
+                    arg: aa,
+                    body: ba,
+                },
+                Term::Pi {
+                    name: nb,
+                    arg: ab,
+                    body: bb,
+                },
+            ) => {
+                aa.alpha_equivalence_impl(ab, unifier)
+                    && unifier.with(na, nb, |unifier| ba.alpha_equivalence_impl(bb, unifier))
+            }
+            _ if std::mem::discriminant(self) == std::mem::discriminant(other) => todo!(),
+            _ => false,
+        }
+    }
+
+    pub fn is_alpha_equivalent(&self, other: &Self) -> bool {
+        self.alpha_equivalence_impl(other, &mut Unifier::new())
+    }
 }
 
 impl std::fmt::Display for Term {
