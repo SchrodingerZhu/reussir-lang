@@ -68,6 +68,10 @@ pub enum Term {
     IntTy(crate::syntax::r#type::Int),
     /// Builtin Float types
     FloatTy(crate::syntax::r#type::Float),
+    /// Unit Type,
+    UnitTy,
+    /// Never Type,
+    NeverTy,
     /// Pi type
     Pi {
         name: UniqueName,
@@ -206,6 +210,8 @@ impl std::fmt::Display for Term {
             Term::MetaVar(unique_name) => todo!(),
             Term::CheckVar => todo!(),
             Term::Invalid => write!(f, "<invalid>"),
+            Term::UnitTy => write!(f, "()"),
+            Term::NeverTy => write!(f, "!"),
         }
     }
 }

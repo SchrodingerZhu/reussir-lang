@@ -59,6 +59,16 @@ impl UniqueName {
     fn fresh(span: SimpleSpan) -> Self {
         Self(Rc::new(WithSpan("$x".into(), span)))
     }
+    fn fresh_in<F>(&self, lookup: F) -> Self
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        if lookup(self) {
+            Self::fresh(self.span())
+        } else {
+            self.clone()
+        }
+    }
     fn span(&self) -> SimpleSpan {
         self.0.1
     }

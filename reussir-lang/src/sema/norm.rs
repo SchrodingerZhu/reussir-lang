@@ -129,6 +129,73 @@ fn quote(value: ValuePtr) -> TermPtr {
     }
 }
 
+impl Value {
+    /// Equivalent under eta-expanding and beta-reduction
+    fn is_equivalent(x: ValuePtr, y: ValuePtr, env: EvalContext) -> bool {
+        let get_fresh_var = |n: &UniqueName| {
+            let fresh = n.fresh_in(|x| env.contains_key(x));
+            let var = Rc::new(WithSpan(Value::Var(fresh.clone()), fresh.span()));
+            let env = env.insert(fresh, var.clone());
+            (var, env)
+        };
+        let check_lambda_like =
+            |n0: &UniqueName,
+             n1: &UniqueName,
+             b0: &dyn Fn(UniqueName, ValuePtr) -> ValuePtr,
+             b1: &dyn Fn(UniqueName, ValuePtr) -> ValuePtr| {
+                let (var, env) = get_fresh_var(n0);
+                let b0 = b0(n0.clone(), var.clone());
+                let b1 = b1(n1.clone(), var);
+                Value::is_equivalent(b0, b1, env)
+            };
+        let app = |f: ValuePtr, x: ValuePtr| {
+            let span = f.1;
+            Rc::new(WithSpan(Value::App(f, x), span))
+        };
+        match (&x.0, &y.0) {
+            (Value::Stuck(term0), Value::Stuck(term1)) => term0.is_alpha_equivalent(term1),
+            (Value::Var(name0), Value::Var(name1)) => name0 == name1,
+            (Value::App(f, x), Value::App(g, y)) => {
+                Value::is_equivalent(f.clone(), g.clone(), env.clone())
+                    && Value::is_equivalent(x.clone(), y.clone(), env)
+            }
+            (Value::Universe, Value::Universe) => true,
+            (
+                Value::Pi {
+                    name: n0,
+                    arg: a0,
+                    body: b0,
+                },
+                Value::Pi {
+                    name: n1,
+                    arg: a1,
+                    body: b1,
+                },
+            ) => {
+                Value::is_equivalent(a0.clone(), a1.clone(), env.clone())
+                    && check_lambda_like(n0, n1, &**b0, &**b1)
+            }
+
+            (Value::Lambda { name: n0, body: b0 }, Value::Lambda { name: n1, body: b1 }) => {
+                check_lambda_like(n0, n1, &**b0, &**b1)
+            }
+
+            (Value::Lambda { name: n, body: b }, value)
+            | (value, Value::Lambda { name: n, body: b }) => {
+                let (var, env) = get_fresh_var(n);
+                let mut s = b(n.clone(), var.clone());
+                let mut t = app(y.clone(), var);
+                if matches!(y.0, Value::Lambda { .. }) {
+                    std::mem::swap(&mut s, &mut t);
+                }
+                Value::is_equivalent(s, t, env)
+            }
+
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use chumsky::span::SimpleSpan;
@@ -155,6 +222,7 @@ mod test {
         x.into_iter()
             .fold(f, |f, x| Rc::new(WithSpan(Term::App(f, x), fake_span)))
     }
+
     #[test]
     fn it_normalizes_app() {
         _ = tracing_subscriber::fmt::try_init();
@@ -196,5 +264,22 @@ mod test {
         let buf = res.to_string();
         println!("{}", buf);
         assert_eq!(buf.chars().filter(|x| *x == 's').count(), 1001);
+    }
+
+    #[test]
+    fn it_checks_simple_equivalence() {
+        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+        let idx = evaluate(context.clone(), lam(["x"], |[x]| x));
+        let idy = evaluate(context.clone(), lam(["y"], |[y]| y));
+        assert!(Value::is_equivalent(idx, idy, context))
+    }
+
+    #[test]
+    fn it_checks_equivalence_after_eta() {
+        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+        let id = lam(["x"], |[x]| x);
+        let id_plain = evaluate(context.clone(), id.clone());
+        let id_eta = evaluate(context.clone(), lam(["x"], move |[x]| app(id, [x])));
+        assert!(Value::is_equivalent(id_plain, id_eta, context))
     }
 }
