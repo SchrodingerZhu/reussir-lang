@@ -1,46 +1,155 @@
 use std::rc::Rc;
 
 use archery::RcK;
-use rpds::HashTrieMap;
+use chumsky::span::SimpleSpan;
+use rpds::{HashTrieMap, Queue, Stack, Vector};
 use rustc_hash::FxRandomState;
 
 use crate::syntax::WithSpan;
 
 use super::{
-    UniqueName,
+    Context, MetaEntry, UniqueName,
     term::{Term, TermPtr},
 };
 
 type Map<K, V> = HashTrieMap<K, V, RcK, FxRandomState>;
 pub type ValuePtr = Rc<WithSpan<Value>>;
 
+type Closure = dyn for<'glb> Fn(UniqueName, ValuePtr, &'glb Context) -> ValuePtr;
+
 #[derive(Clone)]
 pub enum Value {
-    /// cannot elaborate
+    /// Stuck due to effectful terms
     Stuck(TermPtr),
-    Var(UniqueName),
+    /// Stuck on variable
+    Rigid(UniqueName, Queue<ValuePtr>),
+    /// Stuck on unsolved meta
+    Flex(usize, Queue<ValuePtr>),
     App(ValuePtr, ValuePtr),
     Universe,
     Pi {
         name: UniqueName,
         arg: ValuePtr,
-        body: Rc<dyn Fn(UniqueName, ValuePtr) -> ValuePtr>,
+        body: Rc<Closure>,
     },
     Lambda {
         name: UniqueName,
-        body: Rc<dyn Fn(UniqueName, ValuePtr) -> ValuePtr>,
+        body: Rc<Closure>,
     },
     Invalid,
 }
 
-type EvalContext = Map<UniqueName, ValuePtr>;
+#[derive(Clone)]
+struct Environment<'a> {
+    bindings: Map<UniqueName, ValuePtr>,
+    global_ctx: &'a Context,
+}
 
-fn evaluate(ctx: EvalContext, term: TermPtr) -> ValuePtr {
+thread_local! {
+    static EMPTY_VALUE_QUEUE : Queue<ValuePtr> = Queue::new();
+}
+
+impl<'a> Environment<'a> {
+    fn new(global_ctx: &'a Context) -> Self {
+        Self {
+            bindings: Map::new_with_hasher_and_ptr_kind(FxRandomState::new()),
+            global_ctx,
+        }
+    }
+    fn new_with(global_ctx: &'a Context, bindings: Map<UniqueName, ValuePtr>) -> Self {
+        Self {
+            bindings,
+            global_ctx,
+        }
+    }
+    fn names(&self) -> impl Iterator<Item = &UniqueName> {
+        self.bindings.keys()
+    }
+    fn values(&self) -> impl Iterator<Item = &ValuePtr> {
+        self.bindings.values()
+    }
+    fn select_values<'b>(
+        &'a self,
+        iter: impl Iterator<Item = &'b UniqueName>,
+    ) -> impl Iterator<Item = &'a ValuePtr> {
+        iter.map(|x| {
+            self.bindings
+                .get(x)
+                .expect("bound value should always be defined")
+        })
+    }
+    fn lookup_name(&self, name: &UniqueName) -> Option<&ValuePtr> {
+        self.bindings.get(name)
+    }
+    fn contains_name(&self, name: &UniqueName) -> bool {
+        self.bindings.contains_key(name)
+    }
+    fn define(&self, name: UniqueName, value: ValuePtr) -> Self {
+        Self {
+            bindings: self.bindings.insert(name, value),
+            global_ctx: self.global_ctx,
+        }
+    }
+    fn bindings(&self) -> Map<UniqueName, ValuePtr> {
+        self.bindings.clone()
+    }
+    fn global(&self) -> &'a Context {
+        self.global_ctx
+    }
+    fn lookup_meta(&self, idx: usize) -> ValuePtr {
+        let Some(meta) = self.global_ctx.lookup_meta(idx) else {
+            tracing::error!("meta {idx} is not found in global context");
+            return Rc::new(WithSpan(Value::Invalid, SimpleSpan::new(0, 0)));
+        };
+        match meta {
+            MetaEntry::Unsolved(span) => Rc::new(WithSpan(
+                Value::Flex(idx, EMPTY_VALUE_QUEUE.with(Clone::clone)),
+                span,
+            )),
+            MetaEntry::Solved(x) => x,
+        }
+    }
+}
+
+fn value_apply(f: ValuePtr, x: ValuePtr, span: SimpleSpan, global: &Context) -> ValuePtr {
+    match &**f {
+        Value::Lambda { name, body } => body(name.clone(), x.clone(), global),
+        Value::Flex(meta, spine) => {
+            Rc::new(WithSpan(Value::Flex(*meta, spine.enqueue(x.clone())), span))
+        }
+        Value::Rigid(var, spine) => Rc::new(WithSpan(
+            Value::Rigid(var.clone(), spine.enqueue(x.clone())),
+            span,
+        )),
+        _ => {
+            tracing::error!("attempt to apply non-applicable values {span}");
+            Rc::new(WithSpan(Value::Invalid, span))
+        }
+    }
+}
+
+fn value_apply_multiple<I>(f: ValuePtr, iter: I, span: SimpleSpan, global: &Context) -> ValuePtr
+where
+    I: Iterator<Item = ValuePtr>,
+{
+    iter.fold(f, |acc, x| value_apply(acc, x, span, global))
+}
+
+fn value_apply_selectively<'a>(
+    f: ValuePtr,
+    iter: impl Iterator<Item = &'a UniqueName>,
+    span: SimpleSpan,
+    ctx: &Environment,
+) -> ValuePtr {
+    value_apply_multiple(f, ctx.select_values(iter).cloned(), span, ctx.global())
+}
+
+fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
     match &**term {
-        Term::Var(name) => ctx.get(name).cloned().unwrap_or_else(|| {
+        Term::Var(name) => ctx.lookup_name(name).cloned().unwrap_or_else(|| {
             tracing::error!(
                 "failed to resolve {name:?} in {:?}",
-                ctx.keys().collect::<std::vec::Vec<_>>()
+                ctx.names().collect::<std::vec::Vec<_>>()
             );
             Rc::new(WithSpan(Value::Invalid, term.1))
         }),
@@ -51,28 +160,38 @@ fn evaluate(ctx: EvalContext, term: TermPtr) -> ValuePtr {
             body,
         } => {
             let bound = evaluate(ctx.clone(), binding.clone());
-            let ctx = ctx.insert(name.clone(), bound);
+            let ctx = ctx.define(name.clone(), bound);
             evaluate(ctx, body.clone())
         }
         Term::Lambda { binding, body } => {
-            let ctx = ctx.clone();
             let body = body.clone();
+            let bindings = ctx.bindings();
             Rc::new(WithSpan(
                 Value::Lambda {
                     name: binding.clone(),
-                    body: Rc::new(move |name, arg| evaluate(ctx.insert(name, arg), body.clone())),
+                    body: Rc::new(move |name, arg, ctx| {
+                        evaluate(
+                            Environment::new_with(ctx, bindings.clone()).define(name, arg),
+                            body.clone(),
+                        )
+                    }),
                 },
                 term.1,
             ))
         }
         Term::Pi { name, arg, body } => {
             let body = body.clone();
-            let ctx = ctx.clone();
+            let bindings = ctx.bindings();
             Rc::new(WithSpan(
                 Value::Pi {
                     name: name.clone(),
                     arg: evaluate(ctx.clone(), arg.clone()),
-                    body: Rc::new(move |name, arg| evaluate(ctx.insert(name, arg), body.clone())),
+                    body: Rc::new(move |name, arg, ctx| {
+                        evaluate(
+                            Environment::new_with(ctx, bindings.clone()).define(name, arg),
+                            body.clone(),
+                        )
+                    }),
                 },
                 term.1,
             ))
@@ -81,20 +200,54 @@ fn evaluate(ctx: EvalContext, term: TermPtr) -> ValuePtr {
             let lam = evaluate(ctx.clone(), lam.clone());
             let arg = evaluate(ctx.clone(), arg.clone());
             match &**lam {
-                Value::Lambda { name, body } => body(name.clone(), arg),
+                Value::Lambda { name, body } => body(name.clone(), arg, ctx.global()),
                 _ => Rc::new(WithSpan(Value::App(lam, arg), term.1)),
             }
+        }
+        Term::Meta(x) => ctx.lookup_meta(*x),
+        Term::InsertedMeta(x, bounds) => {
+            let meta = ctx.lookup_meta(*x);
+            value_apply_selectively(meta, bounds.iter(), term.1, &ctx)
         }
         _ => Rc::new(WithSpan(Value::Stuck(term.clone()), term.1)),
     }
 }
 
-fn quote(value: ValuePtr) -> TermPtr {
-    let quote =
-        |value| stacker::maybe_grow(32 * 1024, 1024 * 1024, || crate::sema::norm::quote(value));
+fn force(value: ValuePtr, global: &Context) -> ValuePtr {
+    match &**value {
+        Value::Flex(meta, spine) => {
+            if let Some(MetaEntry::Solved(solved)) = global.lookup_meta(*meta) {
+                force(
+                    value_apply_multiple(solved, spine.iter().cloned(), value.1, global),
+                    global,
+                )
+            } else {
+                value
+            }
+        }
+        _ => value,
+    }
+}
+
+fn quote(value: ValuePtr, global: &Context) -> TermPtr {
+    let quote = |value| {
+        stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
+            crate::sema::norm::quote(value, global)
+        })
+    };
+    let quote_spine = |term: TermPtr, spine: &Queue<ValuePtr>| {
+        spine.iter().cloned().map(quote).fold(term, |acc, x| {
+            let span = acc.1;
+            Rc::new(WithSpan(Term::App(acc, x), span))
+        })
+    };
+    let value = force(value, global);
     match &**value {
         Value::Stuck(term) => term.clone(),
-        Value::Var(unique_name) => Rc::new(WithSpan(Term::Var(unique_name.clone()), value.1)),
+        Value::Rigid(name, spine) => {
+            quote_spine(Rc::new(WithSpan(Term::Var(name.clone()), value.1)), spine)
+        }
+        Value::Flex(idx, spine) => quote_spine(Rc::new(WithSpan(Term::Meta(*idx), value.1)), spine),
         Value::App(lam, arg) => {
             let lam = quote(lam.clone());
             let arg = quote(arg.clone());
@@ -103,8 +256,11 @@ fn quote(value: ValuePtr) -> TermPtr {
         Value::Universe => Rc::new(WithSpan(Term::Universe, value.1)),
         Value::Pi { name, arg, body } => {
             let arg = quote(arg.clone());
-            let var = Rc::new(WithSpan(Value::Var(name.clone()), name.span()));
-            let body = quote(body(name.clone(), var));
+            let var = Rc::new(WithSpan(
+                Value::Rigid(name.clone(), EMPTY_VALUE_QUEUE.with(Clone::clone)),
+                name.span(),
+            ));
+            let body = quote(body(name.clone(), var, global));
             Rc::new(WithSpan(
                 Term::Pi {
                     name: name.clone(),
@@ -115,8 +271,11 @@ fn quote(value: ValuePtr) -> TermPtr {
             ))
         }
         Value::Lambda { name, body } => {
-            let var = Rc::new(WithSpan(Value::Var(name.clone()), name.span()));
-            let body = quote(body(name.clone(), var));
+            let var = Rc::new(WithSpan(
+                Value::Rigid(name.clone(), EMPTY_VALUE_QUEUE.with(Clone::clone)),
+                name.span(),
+            ));
+            let body = quote(body(name.clone(), var, global));
             Rc::new(WithSpan(
                 Term::Lambda {
                     binding: name.clone(),
@@ -131,30 +290,29 @@ fn quote(value: ValuePtr) -> TermPtr {
 
 impl Value {
     /// Equivalent under eta-expanding and beta-reduction
-    fn is_equivalent(x: ValuePtr, y: ValuePtr, env: EvalContext) -> bool {
+    fn is_equivalent(x: ValuePtr, y: ValuePtr, env: Environment<'_>) -> bool {
         let get_fresh_var = |n: &UniqueName| {
-            let fresh = n.fresh_in(|x| env.contains_key(x));
-            let var = Rc::new(WithSpan(Value::Var(fresh.clone()), fresh.span()));
-            let env = env.insert(fresh, var.clone());
+            let fresh = n.fresh_in(|x| env.contains_name(x));
+            let var = Rc::new(WithSpan(
+                Value::Rigid(fresh.clone(), EMPTY_VALUE_QUEUE.with(Clone::clone)),
+                fresh.span(),
+            ));
+            let env = env.define(fresh, var.clone());
             (var, env)
         };
-        let check_lambda_like =
-            |n0: &UniqueName,
-             n1: &UniqueName,
-             b0: &dyn Fn(UniqueName, ValuePtr) -> ValuePtr,
-             b1: &dyn Fn(UniqueName, ValuePtr) -> ValuePtr| {
-                let (var, env) = get_fresh_var(n0);
-                let b0 = b0(n0.clone(), var.clone());
-                let b1 = b1(n1.clone(), var);
-                Value::is_equivalent(b0, b1, env)
-            };
+        let check_lambda_like = |n0: &UniqueName, n1: &UniqueName, b0: &Closure, b1: &Closure| {
+            let (var, env) = get_fresh_var(n0);
+            let b0 = b0(n0.clone(), var.clone(), env.global());
+            let b1 = b1(n1.clone(), var, env.global());
+            Value::is_equivalent(b0, b1, env)
+        };
         let app = |f: ValuePtr, x: ValuePtr| {
             let span = f.1;
             Rc::new(WithSpan(Value::App(f, x), span))
         };
         match (&x.0, &y.0) {
             (Value::Stuck(term0), Value::Stuck(term1)) => term0.is_alpha_equivalent(term1),
-            (Value::Var(name0), Value::Var(name1)) => name0 == name1,
+            (Value::Rigid(name0, _), Value::Rigid(name1, _)) => name0 == name1,
             (Value::App(f, x), Value::App(g, y)) => {
                 Value::is_equivalent(f.clone(), g.clone(), env.clone())
                     && Value::is_equivalent(x.clone(), y.clone(), env)
@@ -183,7 +341,7 @@ impl Value {
             (Value::Lambda { name: n, body: b }, value)
             | (value, Value::Lambda { name: n, body: b }) => {
                 let (var, env) = get_fresh_var(n);
-                let mut s = b(n.clone(), var.clone());
+                let mut s = b(n.clone(), var.clone(), env.global());
                 let mut t = app(y.clone(), var);
                 if matches!(y.0, Value::Lambda { .. }) {
                     std::mem::swap(&mut s, &mut t);
@@ -230,9 +388,10 @@ mod test {
         let fx = lam(["f", "x"], |[f, x]| app(f, [x]));
         let res = app(fx, [identity]);
         assert_eq!(res.to_string(), "(λf.λx.(f x) λx.x)");
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+        let global = Context::new();
+        let env = Environment::new(&global);
 
-        let res = quote(evaluate(context, res));
+        let res = quote(evaluate(env, res), &global);
         assert_eq!(res.to_string(), "λx.x");
     }
 
@@ -258,9 +417,10 @@ mod test {
         let ten = app(add, [five.clone(), five]);
         let hundred = app(mul.clone(), [ten.clone(), ten.clone()]);
         let thousand = app(mul, [ten.clone(), hundred]);
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+        let global = Context::new();
+        let env = Environment::new(&global);
 
-        let res = quote(evaluate(context, thousand));
+        let res = quote(evaluate(env, thousand), &global);
         let buf = res.to_string();
         println!("{}", buf);
         assert_eq!(buf.chars().filter(|x| *x == 's').count(), 1001);
@@ -268,18 +428,20 @@ mod test {
 
     #[test]
     fn it_checks_simple_equivalence() {
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
-        let idx = evaluate(context.clone(), lam(["x"], |[x]| x));
-        let idy = evaluate(context.clone(), lam(["y"], |[y]| y));
-        assert!(Value::is_equivalent(idx, idy, context))
+        let global = Context::new();
+        let env = Environment::new(&global);
+        let idx = evaluate(env.clone(), lam(["x"], |[x]| x));
+        let idy = evaluate(env.clone(), lam(["y"], |[y]| y));
+        assert!(Value::is_equivalent(idx, idy, env))
     }
 
     #[test]
     fn it_checks_equivalence_after_eta() {
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+        let global = Context::new();
+        let env = Environment::new(&global);
         let id = lam(["x"], |[x]| x);
-        let id_plain = evaluate(context.clone(), id.clone());
-        let id_eta = evaluate(context.clone(), lam(["x"], move |[x]| app(id, [x])));
-        assert!(Value::is_equivalent(id_plain, id_eta, context))
+        let id_plain = evaluate(env.clone(), id.clone());
+        let id_eta = evaluate(env.clone(), lam(["x"], move |[x]| app(id, [x])));
+        assert!(Value::is_equivalent(id_plain, id_eta, env))
     }
 }

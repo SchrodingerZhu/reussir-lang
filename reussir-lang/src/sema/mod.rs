@@ -1,8 +1,9 @@
 #![allow(unused)]
 mod term;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use chumsky::span::SimpleSpan;
+use norm::ValuePtr;
 use rustc_hash::FxHashMapRand;
 use ustr::Ustr;
 
@@ -38,13 +39,30 @@ impl QualifiedName {
 #[derive(Clone)]
 pub struct Context {
     functions: FxHashMapRand<QualifiedName, TermPtr>,
+    meta_variable: RefCell<Vec<MetaEntry>>,
+}
+
+#[derive(Clone)]
+pub enum MetaEntry {
+    Unsolved(SimpleSpan),
+    Solved(ValuePtr),
 }
 
 impl Context {
     pub fn new() -> Self {
         Self {
             functions: Default::default(),
+            meta_variable: RefCell::new(Vec::new()),
         }
+    }
+    pub fn fresh_meta(&self, span: SimpleSpan) -> usize {
+        let mut v = self.meta_variable.borrow_mut();
+        let res = v.len();
+        v.push(MetaEntry::Unsolved(span));
+        res
+    }
+    pub fn lookup_meta(&self, idx: usize) -> Option<MetaEntry> {
+        self.meta_variable.borrow().get(idx).cloned()
     }
 }
 

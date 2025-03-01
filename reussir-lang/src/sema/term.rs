@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use super::{FieldName, QualifiedName, UniqueName};
 use dynforest::{Connection, Handle as ConnHandle};
+use rpds::Queue;
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use ustr::Ustr;
 
@@ -82,7 +83,8 @@ pub enum Term {
     StrTy,
     BooleanTy,
     Universe,
-    MetaVar(UniqueName),
+    Meta(usize),
+    InsertedMeta(usize, Queue<UniqueName>),
     CheckVar,
     Invalid,
 }
@@ -207,7 +209,7 @@ impl std::fmt::Display for Term {
             Term::StrTy => todo!(),
             Term::BooleanTy => todo!(),
             Term::Universe => todo!(),
-            Term::MetaVar(unique_name) => todo!(),
+            Term::Meta(x) | Term::InsertedMeta(x, _) => write!(f, "?{x}"),
             Term::CheckVar => todo!(),
             Term::Invalid => write!(f, "<invalid>"),
             Term::UnitTy => write!(f, "()"),
