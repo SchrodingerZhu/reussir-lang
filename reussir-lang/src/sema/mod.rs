@@ -3,13 +3,14 @@ mod term;
 use std::{cell::RefCell, rc::Rc};
 
 use chumsky::span::SimpleSpan;
-use norm::ValuePtr;
 use rustc_hash::FxHashMapRand;
 use ustr::Ustr;
+use value::ValuePtr;
 
 use crate::syntax::{self, WithSpan};
 use term::TermPtr;
-mod norm;
+mod eval;
+mod value;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum FieldName {
@@ -76,6 +77,9 @@ impl UniqueName {
     }
     fn fresh(span: SimpleSpan) -> Self {
         Self(Rc::new(WithSpan("$x".into(), span)))
+    }
+    fn refresh(&self) -> Self {
+        Self(Rc::new(*self.0))
     }
     fn fresh_in<F>(&self, lookup: F) -> Self
     where
