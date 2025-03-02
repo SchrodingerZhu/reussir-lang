@@ -252,3 +252,41 @@ impl std::fmt::Display for Term {
         })
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test {
+    use chumsky::span::SimpleSpan;
+
+    use crate::sema::eval::evaluate;
+
+    use super::*;
+
+    pub(crate) fn lam<F, const N: usize>(name: [&str; N], body: F) -> TermPtr
+    where
+        F: FnOnce([TermPtr; N]) -> TermPtr,
+    {
+        let fake_span = SimpleSpan::new(0, 0);
+        let names = name.map(|name| UniqueName::new(name, fake_span));
+        let vars = names
+            .clone()
+            .map(|name| Rc::new(WithSpan(Term::Var(name), fake_span)));
+        let body = body(vars);
+        names.into_iter().rev().fold(body, |body, binding| {
+            Rc::new(WithSpan(
+                Term::Lambda {
+                    binding,
+                    body,
+                    implicit: false,
+                },
+                fake_span,
+            ))
+        })
+    }
+
+    pub(crate) fn app<const N: usize>(f: TermPtr, x: [TermPtr; N]) -> TermPtr {
+        let fake_span = SimpleSpan::new(0, 0);
+        x.into_iter().fold(f, |f, x| {
+            Rc::new(WithSpan(Term::App(f, x, false), fake_span))
+        })
+    }
+}

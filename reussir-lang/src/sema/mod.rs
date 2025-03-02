@@ -67,6 +67,11 @@ impl Context {
     pub fn lookup_meta(&self, idx: usize) -> Option<MetaEntry> {
         self.meta_variable.borrow().get(idx).cloned()
     }
+    pub fn insert_meta(&self, idx: usize, value: ValuePtr) {
+        self.meta_variable
+            .borrow_mut()
+            .insert(idx, MetaEntry::Solved(value))
+    }
 }
 
 #[derive(Clone, Eq)]

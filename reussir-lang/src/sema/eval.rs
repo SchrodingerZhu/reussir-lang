@@ -288,7 +288,7 @@ mod test {
     use chumsky::span::SimpleSpan;
 
     use super::*;
-    use crate::sema::value::test::*;
+    use crate::sema::term::test::*;
 
     #[test]
     fn it_normalizes_app() {
