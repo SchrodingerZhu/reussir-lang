@@ -10,7 +10,7 @@ use crate::syntax::WithSpan;
 use super::{
     Context, MetaEntry, UniqueName,
     term::{Term, TermPtr},
-    value::{Map, Value, ValuePtr, empty_spine},
+    value::{Map, SpineItem, Value, ValuePtr, empty_spine},
 };
 
 #[derive(Clone)]
@@ -78,16 +78,18 @@ impl<'a> Environment<'a> {
     }
 }
 
-fn value_apply(f: ValuePtr, x: ValuePtr, span: SimpleSpan, global: &Context) -> ValuePtr {
+pub(crate) fn value_apply(
+    f: ValuePtr,
+    x: SpineItem,
+    span: SimpleSpan,
+    global: &Context,
+) -> ValuePtr {
     match &**f {
-        Value::Lambda { name, body } => body(name.clone(), x.clone(), global),
-        Value::Flex(meta, spine) => {
-            Rc::new(WithSpan(Value::Flex(*meta, spine.enqueue(x.clone())), span))
+        Value::Lambda { name, body, .. } => body(name.clone(), x.value, global),
+        Value::Flex(meta, spine) => Rc::new(WithSpan(Value::Flex(*meta, spine.enqueue(x)), span)),
+        Value::Rigid(var, spine) => {
+            Rc::new(WithSpan(Value::Rigid(var.clone(), spine.enqueue(x)), span))
         }
-        Value::Rigid(var, spine) => Rc::new(WithSpan(
-            Value::Rigid(var.clone(), spine.enqueue(x.clone())),
-            span,
-        )),
         _ => {
             tracing::error!("attempt to apply non-applicable values {span}");
             Rc::new(WithSpan(Value::Invalid, span))
@@ -97,7 +99,7 @@ fn value_apply(f: ValuePtr, x: ValuePtr, span: SimpleSpan, global: &Context) -> 
 
 fn value_apply_multiple<I>(f: ValuePtr, iter: I, span: SimpleSpan, global: &Context) -> ValuePtr
 where
-    I: Iterator<Item = ValuePtr>,
+    I: Iterator<Item = SpineItem>,
 {
     iter.fold(f, |acc, x| value_apply(acc, x, span, global))
 }
@@ -106,9 +108,17 @@ fn value_apply_selectively<'a>(
     f: ValuePtr,
     iter: impl Iterator<Item = &'a UniqueName>,
     span: SimpleSpan,
+    implicit: bool,
     ctx: &Environment,
 ) -> ValuePtr {
-    value_apply_multiple(f, ctx.select_values(iter).cloned(), span, ctx.global())
+    value_apply_multiple(
+        f,
+        ctx.select_values(iter)
+            .cloned()
+            .map(|v| SpineItem::new(v, implicit)),
+        span,
+        ctx.global(),
+    )
 }
 
 pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
@@ -130,12 +140,17 @@ pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
             let ctx = ctx.define(name.clone(), bound);
             evaluate(ctx, body.clone())
         }
-        Term::Lambda { binding, body } => {
+        Term::Lambda {
+            binding,
+            body,
+            implicit,
+        } => {
             let body = body.clone();
             let bindings = ctx.bindings();
             Rc::new(WithSpan(
                 Value::Lambda {
                     name: binding.clone(),
+                    implicit: *implicit,
                     body: Rc::new(move |name, arg, ctx| {
                         evaluate(
                             Environment::new_with(ctx, bindings.clone()).define(name, arg),
@@ -146,13 +161,19 @@ pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
                 term.1,
             ))
         }
-        Term::Pi { name, arg, body } => {
+        Term::Pi {
+            name,
+            arg,
+            body,
+            implicit,
+        } => {
             let body = body.clone();
             let bindings = ctx.bindings();
             Rc::new(WithSpan(
                 Value::Pi {
                     name: name.clone(),
                     arg: evaluate(ctx.clone(), arg.clone()),
+                    implicit: *implicit,
                     body: Rc::new(move |name, arg, ctx| {
                         evaluate(
                             Environment::new_with(ctx, bindings.clone()).define(name, arg),
@@ -163,18 +184,15 @@ pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
                 term.1,
             ))
         }
-        Term::App(lam, arg) => {
+        Term::App(lam, arg, implicit) => {
             let lam = evaluate(ctx.clone(), lam.clone());
             let arg = evaluate(ctx.clone(), arg.clone());
-            match &**lam {
-                Value::Lambda { name, body } => body(name.clone(), arg, ctx.global()),
-                _ => Rc::new(WithSpan(Value::App(lam, arg), term.1)),
-            }
+            value_apply(lam, SpineItem::new(arg, *implicit), term.1, ctx.global())
         }
         Term::Meta(x) => ctx.lookup_meta(*x),
         Term::InsertedMeta(x, bounds) => {
             let meta = ctx.lookup_meta(*x);
-            value_apply_selectively(meta, bounds.iter(), term.1, &ctx)
+            value_apply_selectively(meta, bounds.iter(), term.1, false, &ctx)
         }
         _ => Rc::new(WithSpan(Value::Stuck(term.clone()), term.1)),
     }
@@ -202,11 +220,15 @@ pub fn quote(value: ValuePtr, global: &Context) -> TermPtr {
             crate::sema::eval::quote(value, global)
         })
     };
-    let quote_spine = |term: TermPtr, spine: &Queue<ValuePtr>| {
-        spine.iter().cloned().map(quote).fold(term, |acc, x| {
-            let span = acc.1;
-            Rc::new(WithSpan(Term::App(acc, x), span))
-        })
+    let quote_spine = |term: TermPtr, spine: &Queue<SpineItem>| {
+        spine
+            .iter()
+            .cloned()
+            .map(|item| (quote(item.value), item.implicit))
+            .fold(term, |acc, (x, i)| {
+                let span = acc.1;
+                Rc::new(WithSpan(Term::App(acc, x, i), span))
+            })
     };
     let value = force(value, global);
     match &**value {
@@ -215,13 +237,13 @@ pub fn quote(value: ValuePtr, global: &Context) -> TermPtr {
             quote_spine(Rc::new(WithSpan(Term::Var(name.clone()), value.1)), spine)
         }
         Value::Flex(idx, spine) => quote_spine(Rc::new(WithSpan(Term::Meta(*idx), value.1)), spine),
-        Value::App(lam, arg) => {
-            let lam = quote(lam.clone());
-            let arg = quote(arg.clone());
-            Rc::new(WithSpan(Term::App(lam, arg), value.1))
-        }
         Value::Universe => Rc::new(WithSpan(Term::Universe, value.1)),
-        Value::Pi { name, arg, body } => {
+        Value::Pi {
+            name,
+            arg,
+            body,
+            implicit,
+        } => {
             let arg = quote(arg.clone());
             let var = Rc::new(WithSpan(
                 Value::Rigid(name.clone(), empty_spine()),
@@ -233,11 +255,16 @@ pub fn quote(value: ValuePtr, global: &Context) -> TermPtr {
                     name: name.clone(),
                     arg,
                     body,
+                    implicit: *implicit,
                 },
                 value.1,
             ))
         }
-        Value::Lambda { name, body } => {
+        Value::Lambda {
+            name,
+            body,
+            implicit,
+        } => {
             let var = Rc::new(WithSpan(
                 Value::Rigid(name.clone(), empty_spine()),
                 name.span(),
@@ -247,6 +274,7 @@ pub fn quote(value: ValuePtr, global: &Context) -> TermPtr {
                 Term::Lambda {
                     binding: name.clone(),
                     body,
+                    implicit: *implicit,
                 },
                 value.1,
             ))

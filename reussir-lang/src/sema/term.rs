@@ -32,7 +32,12 @@ pub enum Term {
         arguments: Box<[(FieldName, TermPtr)]>,
     },
     /// closure call
-    App(TermPtr, TermPtr),
+    App(
+        TermPtr,
+        TermPtr,
+        /// implicit
+        bool,
+    ),
     /// project a field out of a record
     Proj {
         value: TermPtr,
@@ -56,6 +61,7 @@ pub enum Term {
     Lambda {
         binding: UniqueName,
         body: TermPtr,
+        implicit: bool,
     },
     /// Let binding
     Let {
@@ -78,6 +84,7 @@ pub enum Term {
         name: UniqueName,
         arg: TermPtr,
         body: TermPtr,
+        implicit: bool,
     },
     Var(UniqueName),
     StrTy,
@@ -135,25 +142,30 @@ impl Term {
                 Term::Lambda {
                     binding: va,
                     body: ba,
+                    implicit: i0,
                 },
                 Term::Lambda {
                     binding: vb,
                     body: bb,
+                    implicit: i1,
                 },
-            ) => unifier.with(va, vb, |unifier| ba.alpha_equivalence_impl(bb, unifier)),
+            ) => i0 == i1 && unifier.with(va, vb, |unifier| ba.alpha_equivalence_impl(bb, unifier)),
             (
                 Term::Pi {
                     name: na,
                     arg: aa,
                     body: ba,
+                    implicit: i0,
                 },
                 Term::Pi {
                     name: nb,
                     arg: ab,
                     body: bb,
+                    implicit: i1,
                 },
             ) => {
-                aa.alpha_equivalence_impl(ab, unifier)
+                i0 == i1
+                    && aa.alpha_equivalence_impl(ab, unifier)
                     && unifier.with(na, nb, |unifier| ba.alpha_equivalence_impl(bb, unifier))
             }
             _ if std::mem::discriminant(self) == std::mem::discriminant(other) => todo!(),
@@ -168,7 +180,7 @@ impl Term {
 
 impl std::fmt::Display for Term {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        stacker::maybe_grow(32 * 1024, 1024 * 1024, || match self {
             Term::Integer(x) => write!(f, "{}", x),
             Term::Float(x) => write!(f, "{}", x),
             Term::Str(x) => write!(f, "{x:?}"),
@@ -183,16 +195,28 @@ impl std::fmt::Display for Term {
                 ty_args,
                 arguments,
             } => todo!(),
-            Term::App(gc, gc1) => {
-                write!(f, "({} {})", ***gc, ***gc1)
+            Term::App(gc, gc1, implicit) => {
+                if !implicit {
+                    write!(f, "({} {})", ***gc, ***gc1)
+                } else {
+                    write!(f, "({} {{{}}})", ***gc, ***gc1)
+                }
             }
             Term::Proj { value, field } => todo!(),
             Term::Match {} => todo!(),
             Term::Cast {} => todo!(),
             Term::FuncAbs { target, ty_args } => todo!(),
             Term::CtorAbs { target, ty_args } => todo!(),
-            Term::Lambda { binding, body } => {
-                write!(f, "λ{}.{}", **binding.0, body.0)
+            Term::Lambda {
+                binding,
+                body,
+                implicit,
+            } => {
+                if !implicit {
+                    write!(f, "λ{}.{}", **binding.0, body.0)
+                } else {
+                    write!(f, "λ{{{}}}.{}", **binding.0, body.0)
+                }
             }
             Term::Let {
                 name,
@@ -202,7 +226,18 @@ impl std::fmt::Display for Term {
             Term::Seq(gc, gc1) => todo!(),
             Term::IntTy(_) => todo!(),
             Term::FloatTy(_) => todo!(),
-            Term::Pi { name, arg, body } => todo!(),
+            Term::Pi {
+                name,
+                arg,
+                body,
+                implicit,
+            } => {
+                if !implicit {
+                    write!(f, "Π({} : {}).{}", **name.0, arg.0, body.0)
+                } else {
+                    write!(f, "Π{{{} : {}}}.{}", **name.0, arg.0, body.0)
+                }
+            }
             Term::Var(unique_name) => {
                 write!(f, "{}", unique_name.0.0)
             }
@@ -214,6 +249,6 @@ impl std::fmt::Display for Term {
             Term::Invalid => write!(f, "<invalid>"),
             Term::UnitTy => write!(f, "()"),
             Term::NeverTy => write!(f, "!"),
-        }
+        })
     }
 }
