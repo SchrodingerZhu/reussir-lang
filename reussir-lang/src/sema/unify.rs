@@ -288,8 +288,11 @@ fn unify(lhs: ValuePtr, rhs: ValuePtr, global: &Context) -> Result<(), Error> {
 
 #[cfg(test)]
 mod test {
+    use chumsky::span::SimpleSpan;
+    use rpds::Queue;
+
     use super::*;
-    use crate::sema::term::test::*;
+    use crate::sema::{eval::quote, term::test::*};
 
     #[test]
     fn it_checks_simple_equivalence() {
@@ -308,5 +311,34 @@ mod test {
         let id_plain = evaluate(env.clone(), id.clone());
         let id_eta = evaluate(env.clone(), lam(["x"], move |[x]| app(id, [x])));
         unify(id_plain, id_eta, &global).unwrap();
+    }
+
+    #[test]
+    fn it_unifies_untyped_ids() {
+        let global = Context::new();
+        let env = Environment::new(&global);
+        let id = lam(["A", "x"], |[_, x]| x);
+        let fake = SimpleSpan::new(0, 0);
+        let id_with_hole = lam(["A", "x"], |[a, x]| {
+            let Term::Var(a_name) = &a.0 else {
+                unreachable!()
+            };
+            let Term::Var(x_name) = &x.0 else {
+                unreachable!()
+            };
+            let a_name = a_name.clone();
+            let x_name = x_name.clone();
+            let meta = global.fresh_meta(fake);
+            let inserted_meta = Rc::new(WithSpan(
+                Term::InsertedMeta(meta, Queue::new().enqueue(a_name).enqueue(x_name)),
+                fake,
+            ));
+            app(id.clone(), [inserted_meta, x])
+        });
+        let id = evaluate(env.clone(), id.clone());
+        let id_with_hole = evaluate(env.clone(), id_with_hole.clone());
+        unify(id, id_with_hole.clone(), &global).unwrap();
+        let term = quote(id_with_hole, &global);
+        println!("{}", **term);
     }
 }

@@ -10,6 +10,7 @@ use value::ValuePtr;
 
 use crate::syntax::{self, WithSpan};
 use term::TermPtr;
+mod elab;
 mod eval;
 mod unify;
 mod value;
