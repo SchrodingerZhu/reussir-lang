@@ -4,12 +4,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use chumsky::span::SimpleSpan;
 use rustc_hash::FxHashMapRand;
+use thiserror::Error;
 use ustr::Ustr;
 use value::ValuePtr;
 
 use crate::syntax::{self, WithSpan};
 use term::TermPtr;
 mod eval;
+mod unify;
 mod value;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

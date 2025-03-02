@@ -198,7 +198,7 @@ pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
     }
 }
 
-fn force(value: ValuePtr, global: &Context) -> ValuePtr {
+pub(crate) fn force(value: ValuePtr, global: &Context) -> ValuePtr {
     match &**value {
         Value::Flex(meta, spine) => {
             if let Some(MetaEntry::Solved(solved)) = global.lookup_meta(*meta) {
