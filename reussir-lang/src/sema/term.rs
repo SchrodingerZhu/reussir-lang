@@ -1,17 +1,15 @@
-use std::{ops::Deref, rc::Rc};
+use std::rc::Rc;
 
 use super::{FieldName, QualifiedName, UniqueName};
-use archery::RcK;
-use chumsky::span::SimpleSpan;
-use rpds::{HashTrieMap, List};
-use rustc_hash::FxRandomState;
+use dynforest::{Connection, Handle as ConnHandle};
+use rpds::Queue;
+use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use ustr::Ustr;
 
 use crate::syntax::WithSpan;
 pub type TermPtr = Rc<WithSpan<Term>>;
-pub type ValuePtr = Rc<WithSpan<Value>>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Term {
     /// Integer literal
     Integer(rug::Integer),
@@ -34,7 +32,12 @@ pub enum Term {
         arguments: Box<[(FieldName, TermPtr)]>,
     },
     /// closure call
-    App(TermPtr, TermPtr),
+    App(
+        TermPtr,
+        TermPtr,
+        /// implicit
+        bool,
+    ),
     /// project a field out of a record
     Proj {
         value: TermPtr,
@@ -58,10 +61,12 @@ pub enum Term {
     Lambda {
         binding: UniqueName,
         body: TermPtr,
+        implicit: bool,
     },
     /// Let binding
     Let {
         name: UniqueName,
+        ty: Option<TermPtr>,
         binding: TermPtr,
         body: TermPtr,
     },
@@ -71,26 +76,114 @@ pub enum Term {
     IntTy(crate::syntax::r#type::Int),
     /// Builtin Float types
     FloatTy(crate::syntax::r#type::Float),
+    /// Unit Type,
+    UnitTy,
+    /// Never Type,
+    NeverTy,
     /// Pi type
     Pi {
         name: UniqueName,
         arg: TermPtr,
         body: TermPtr,
+        implicit: bool,
     },
     Var(UniqueName),
     StrTy,
     BooleanTy,
     Universe,
-    MetaVar(UniqueName),
+    // A hole whose meta variable is not yet assigned
+    Hole,
+    Meta(usize),
+    InsertedMeta(usize, Queue<UniqueName>),
     CheckVar,
     Invalid,
 }
 
-type Map<K, V> = HashTrieMap<K, V, RcK, FxRandomState>;
+#[derive(Default)]
+struct Unifier<'a>(FxHashMapRand<&'a UniqueName, ConnHandle>);
+
+impl<'a> Unifier<'a> {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_handle(&mut self, target: &'a UniqueName) -> ConnHandle {
+        self.0.entry(target).or_default().clone()
+    }
+
+    fn with<R, F: for<'x> FnOnce(&'x mut Self) -> R>(
+        &mut self,
+        a: &'a UniqueName,
+        b: &'a UniqueName,
+        conti: F,
+    ) -> R {
+        let h0 = self.get_handle(a);
+        let h1 = self.get_handle(b);
+        let conn = h0.connect(&h1);
+        debug_assert!(conn.is_some());
+
+        conti(self)
+    }
+
+    fn is_equivalent(&mut self, a: &'a UniqueName, b: &'a UniqueName) -> bool {
+        let h0 = self.get_handle(a);
+        let h1 = self.get_handle(b);
+        h0.is_connected(&h1)
+    }
+}
+
+impl Term {
+    /// For alpha equivalence, unifier is simply a hashmap tracks variable mapping
+    fn alpha_equivalence_impl<'a, 'b>(&'a self, other: &'a Self, unifier: &mut Unifier<'b>) -> bool
+    where
+        'a: 'b,
+    {
+        match (self, other) {
+            (Term::Var(a), Term::Var(b)) => unifier.is_equivalent(a, b),
+            (Term::Integer(a), Term::Integer(b)) => a == b,
+            (
+                Term::Lambda {
+                    binding: va,
+                    body: ba,
+                    implicit: i0,
+                },
+                Term::Lambda {
+                    binding: vb,
+                    body: bb,
+                    implicit: i1,
+                },
+            ) => i0 == i1 && unifier.with(va, vb, |unifier| ba.alpha_equivalence_impl(bb, unifier)),
+            (
+                Term::Pi {
+                    name: na,
+                    arg: aa,
+                    body: ba,
+                    implicit: i0,
+                },
+                Term::Pi {
+                    name: nb,
+                    arg: ab,
+                    body: bb,
+                    implicit: i1,
+                },
+            ) => {
+                i0 == i1
+                    && aa.alpha_equivalence_impl(ab, unifier)
+                    && unifier.with(na, nb, |unifier| ba.alpha_equivalence_impl(bb, unifier))
+            }
+            _ if std::mem::discriminant(self) == std::mem::discriminant(other) => todo!(),
+            _ => false,
+        }
+    }
+
+    pub fn is_alpha_equivalent(&self, other: &Self) -> bool {
+        self.alpha_equivalence_impl(other, &mut Unifier::new())
+    }
+}
 
 impl std::fmt::Display for Term {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        stacker::maybe_grow(32 * 1024, 1024 * 1024, || match self {
             Term::Integer(x) => write!(f, "{}", x),
             Term::Float(x) => write!(f, "{}", x),
             Term::Str(x) => write!(f, "{x:?}"),
@@ -105,159 +198,87 @@ impl std::fmt::Display for Term {
                 ty_args,
                 arguments,
             } => todo!(),
-            Term::App(gc, gc1) => {
-                write!(f, "({} {})", ***gc, ***gc1)
+            Term::App(gc, gc1, implicit) => {
+                if !implicit {
+                    write!(f, "({} {})", ***gc, ***gc1)
+                } else {
+                    write!(f, "({} {{{}}})", ***gc, ***gc1)
+                }
             }
             Term::Proj { value, field } => todo!(),
             Term::Match {} => todo!(),
             Term::Cast {} => todo!(),
             Term::FuncAbs { target, ty_args } => todo!(),
             Term::CtorAbs { target, ty_args } => todo!(),
-            Term::Lambda { binding, body } => {
-                write!(f, "λ{}.{}", **binding.0, body.0)
+            Term::Lambda {
+                binding,
+                body,
+                implicit,
+            } => {
+                if !implicit {
+                    write!(f, "λ{}.{}", **binding.0, body.0)
+                } else {
+                    write!(f, "λ{{{}}}.{}", **binding.0, body.0)
+                }
             }
             Term::Let {
                 name,
+                ty,
                 binding,
                 body,
-            } => todo!(),
+            } => {
+                if let Some(ty) = ty {
+                    write!(
+                        f,
+                        "let {} : {} = {} in {}",
+                        **name.0, ty.0, binding.0, body.0
+                    )
+                } else {
+                    write!(f, "let {} = {} in {}", **name.0, binding.0, body.0)
+                }
+            }
             Term::Seq(gc, gc1) => todo!(),
             Term::IntTy(_) => todo!(),
             Term::FloatTy(_) => todo!(),
-            Term::Pi { name, arg, body } => todo!(),
+            Term::Pi {
+                name,
+                arg,
+                body,
+                implicit,
+            } => {
+                if (**name.0).is_empty() {
+                    write!(f, "{} -> {}", arg.0, body.0)
+                } else if !implicit {
+                    write!(f, "Π({} : {}).{}", **name.0, arg.0, body.0)
+                } else {
+                    write!(f, "Π{{{} : {}}}.{}", **name.0, arg.0, body.0)
+                }
+            }
             Term::Var(unique_name) => {
                 write!(f, "{}", unique_name.0.0)
             }
             Term::StrTy => todo!(),
             Term::BooleanTy => todo!(),
-            Term::Universe => todo!(),
-            Term::MetaVar(unique_name) => todo!(),
+            Term::Universe => write!(f, "U"),
+            Term::Meta(x) | Term::InsertedMeta(x, _) => write!(f, "?{x}"),
             Term::CheckVar => todo!(),
             Term::Invalid => write!(f, "<invalid>"),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum Value {
-    /// cannot elaborate
-    Stuck(TermPtr),
-    Var(UniqueName),
-    App(ValuePtr, ValuePtr),
-    Universe,
-    Pi {
-        name: UniqueName,
-        arg: ValuePtr,
-        body: Rc<dyn Fn(UniqueName, ValuePtr) -> ValuePtr>,
-    },
-    Lambda {
-        name: UniqueName,
-        body: Rc<dyn Fn(UniqueName, ValuePtr) -> ValuePtr>,
-    },
-    Invalid,
-}
-
-type EvalContext = Map<UniqueName, ValuePtr>;
-
-fn evaluate(ctx: EvalContext, term: TermPtr) -> ValuePtr {
-    match &**term {
-        Term::Var(name) => ctx.get(name).cloned().unwrap_or_else(|| {
-            tracing::error!(
-                "failed to resolve {name:?} in {:?}",
-                ctx.keys().collect::<std::vec::Vec<_>>()
-            );
-            Rc::new(WithSpan(Value::Invalid, term.1))
-        }),
-        Term::Universe => Rc::new(WithSpan(Value::Universe, term.1)),
-        Term::Let {
-            name,
-            binding,
-            body,
-        } => {
-            let bound = evaluate(ctx.clone(), binding.clone());
-            let ctx = ctx.insert(name.clone(), bound);
-            evaluate(ctx, body.clone())
-        }
-        Term::Lambda { binding, body } => {
-            let ctx = ctx.clone();
-            let body = body.clone();
-            Rc::new(WithSpan(
-                Value::Lambda {
-                    name: binding.clone(),
-                    body: Rc::new(move |name, arg| evaluate(ctx.insert(name, arg), body.clone())),
-                },
-                term.1,
-            ))
-        }
-        Term::Pi { name, arg, body } => {
-            let body = body.clone();
-            let ctx = ctx.clone();
-            Rc::new(WithSpan(
-                Value::Pi {
-                    name: name.clone(),
-                    arg: evaluate(ctx.clone(), arg.clone()),
-                    body: Rc::new(move |name, arg| evaluate(ctx.insert(name, arg), body.clone())),
-                },
-                term.1,
-            ))
-        }
-        Term::App(lam, arg) => {
-            let lam = evaluate(ctx.clone(), lam.clone());
-            let arg = evaluate(ctx.clone(), arg.clone());
-            match &**lam {
-                Value::Lambda { name, body } => body(name.clone(), arg),
-                _ => Rc::new(WithSpan(Value::App(lam, arg), term.1)),
-            }
-        }
-        _ => Rc::new(WithSpan(Value::Stuck(term.clone()), term.1)),
-    }
-}
-
-fn quote(value: ValuePtr) -> TermPtr {
-    let quote =
-        |value| stacker::maybe_grow(32 * 1024, 1024 * 1024, || crate::sema::term::quote(value));
-    match &**value {
-        Value::Stuck(term) => term.clone(),
-        Value::Var(unique_name) => Rc::new(WithSpan(Term::Var(unique_name.clone()), value.1)),
-        Value::App(lam, arg) => {
-            let lam = quote(lam.clone());
-            let arg = quote(arg.clone());
-            Rc::new(WithSpan(Term::App(lam, arg), value.1))
-        }
-        Value::Universe => Rc::new(WithSpan(Term::Universe, value.1)),
-        Value::Pi { name, arg, body } => {
-            let arg = quote(arg.clone());
-            let var = Rc::new(WithSpan(Value::Var(name.clone()), arg.1));
-            let body = quote(body(name.clone(), var));
-            Rc::new(WithSpan(
-                Term::Pi {
-                    name: name.clone(),
-                    arg,
-                    body,
-                },
-                value.1,
-            ))
-        }
-        Value::Lambda { name, body } => {
-            let var = Rc::new(WithSpan(Value::Var(name.clone()), value.1));
-            let body = quote(body(name.clone(), var));
-            Rc::new(WithSpan(
-                Term::Lambda {
-                    binding: name.clone(),
-                    body,
-                },
-                value.1,
-            ))
-        }
-        Value::Invalid => Rc::new(WithSpan(Term::Invalid, value.1)),
+            Term::UnitTy => write!(f, "()"),
+            Term::NeverTy => write!(f, "!"),
+            Term::Hole => write!(f, "_"),
+        })
     }
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
+    use chumsky::span::SimpleSpan;
+
+    use crate::sema::eval::evaluate;
+
     use super::*;
 
-    fn lam<F, const N: usize>(name: [&str; N], body: F) -> TermPtr
+    pub(crate) fn lam<F, const N: usize>(name: [&str; N], body: F) -> TermPtr
     where
         F: FnOnce([TermPtr; N]) -> TermPtr,
     {
@@ -268,55 +289,83 @@ mod test {
             .map(|name| Rc::new(WithSpan(Term::Var(name), fake_span)));
         let body = body(vars);
         names.into_iter().rev().fold(body, |body, binding| {
-            Rc::new(WithSpan(Term::Lambda { binding, body }, fake_span))
+            Rc::new(WithSpan(
+                Term::Lambda {
+                    binding,
+                    body,
+                    implicit: false,
+                },
+                fake_span,
+            ))
         })
     }
 
-    fn app<const N: usize>(f: TermPtr, x: [TermPtr; N]) -> TermPtr {
+    pub(crate) fn universe() -> TermPtr {
+        Rc::new(WithSpan(Term::Universe, SimpleSpan::new(0, 0)))
+    }
+
+    pub(crate) fn hole() -> TermPtr {
+        Rc::new(WithSpan(Term::Hole, SimpleSpan::new(0, 0)))
+    }
+
+    pub(crate) fn r#let<F>(name: &str, binding: TermPtr, ty: TermPtr, b: F) -> TermPtr
+    where
+        F: FnOnce(TermPtr) -> TermPtr,
+    {
         let fake_span = SimpleSpan::new(0, 0);
-        x.into_iter()
-            .fold(f, |f, x| Rc::new(WithSpan(Term::App(f, x), fake_span)))
+        let name = UniqueName::new(name, fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        let body = b(var);
+        let ty = Some(ty);
+        Rc::new(WithSpan(
+            Term::Let {
+                name,
+                ty,
+                binding,
+                body,
+            },
+            fake_span,
+        ))
     }
-    #[test]
-    fn it_normalizes_app() {
-        _ = tracing_subscriber::fmt::try_init();
-        let identity = lam(["x"], |[x]| x);
-        let fx = lam(["f", "x"], |[f, x]| app(f, [x]));
-        let res = app(fx, [identity]);
-        assert_eq!(res.to_string(), "(λf.λx.(f x) λx.x)");
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
 
-        let res = quote(evaluate(context, res));
-        assert_eq!(res.to_string(), "λx.x");
+    pub(crate) fn pi<F>(name: &str, implicit: bool, arg: TermPtr, body: F) -> TermPtr
+    where
+        F: FnOnce(TermPtr) -> TermPtr,
+    {
+        let fake_span = SimpleSpan::new(0, 0);
+        let name = UniqueName::new(name, fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        let body = body(var);
+        Rc::new(WithSpan(
+            Term::Pi {
+                name,
+                body,
+                arg,
+                implicit,
+            },
+            fake_span,
+        ))
     }
 
-    #[test]
-    fn it_normalizes_thousand() {
-        _ = tracing_subscriber::fmt::try_init();
-        let five = lam(["s", "z"], |[s, z]| {
-            let one = app(s.clone(), [z]);
-            let two = app(s.clone(), [one]);
-            let three = app(s.clone(), [two]);
-            let four = app(s.clone(), [three]);
-            app(s, [four])
-        });
-        let add = lam(["a", "b", "s", "z"], |[a, b, s, z]| {
-            let bsz = app(b, [s.clone(), z]);
-            let r#as = app(a, [s]);
-            app(r#as, [bsz])
-        });
-        let mul = lam(["a", "b", "s", "z"], |[a, b, s, z]| {
-            let bs = app(b, [s]);
-            app(a, [bs, z])
-        });
-        let ten = app(add, [five.clone(), five]);
-        let hundred = app(mul.clone(), [ten.clone(), ten.clone()]);
-        let thousand = app(mul, [ten.clone(), hundred]);
-        let context = Map::new_with_hasher_and_ptr_kind(FxRandomState::new());
+    pub(crate) fn arrow(x: TermPtr, y: TermPtr) -> TermPtr {
+        let fake_span = SimpleSpan::new(0, 0);
+        let name = UniqueName::new("", fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        Rc::new(WithSpan(
+            Term::Pi {
+                name,
+                body: y,
+                arg: x,
+                implicit: false,
+            },
+            fake_span,
+        ))
+    }
 
-        let res = quote(evaluate(context, thousand));
-        let buf = res.to_string();
-        println!("{}", buf);
-        assert_eq!(buf.chars().filter(|x| *x == 's').count(), 1001);
+    pub(crate) fn app<const N: usize>(f: TermPtr, x: [TermPtr; N]) -> TermPtr {
+        let fake_span = SimpleSpan::new(0, 0);
+        x.into_iter().fold(f, |f, x| {
+            Rc::new(WithSpan(Term::App(f, x, false), fake_span))
+        })
     }
 }

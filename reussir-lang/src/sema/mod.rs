@@ -1,18 +1,19 @@
 #![allow(unused)]
 mod term;
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
+use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use chumsky::span::SimpleSpan;
-use rustc_hash::{FxBuildHasher, FxHashMapRand, FxRandomState};
-use smallvec::SmallVec;
+use rustc_hash::FxHashMapRand;
+use thiserror::Error;
 use ustr::Ustr;
+use value::ValuePtr;
 
 use crate::syntax::{self, WithSpan};
-use term::{Term, TermPtr};
+use term::TermPtr;
+mod elab;
+mod eval;
+mod unify;
+mod value;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum FieldName {
@@ -42,13 +43,35 @@ impl QualifiedName {
 #[derive(Clone)]
 pub struct Context {
     functions: FxHashMapRand<QualifiedName, TermPtr>,
+    meta_variable: RefCell<Vec<MetaEntry>>,
+}
+
+#[derive(Clone)]
+pub enum MetaEntry {
+    Unsolved(SimpleSpan),
+    Solved(ValuePtr),
 }
 
 impl Context {
     pub fn new() -> Self {
         Self {
             functions: Default::default(),
+            meta_variable: RefCell::new(Vec::new()),
         }
+    }
+    pub fn fresh_meta(&self, span: SimpleSpan) -> usize {
+        let mut v = self.meta_variable.borrow_mut();
+        let res = v.len();
+        v.push(MetaEntry::Unsolved(span));
+        res
+    }
+    pub fn lookup_meta(&self, idx: usize) -> Option<MetaEntry> {
+        self.meta_variable.borrow().get(idx).cloned()
+    }
+    pub fn insert_meta(&self, idx: usize, value: ValuePtr) {
+        self.meta_variable
+            .borrow_mut()
+            .insert(idx, MetaEntry::Solved(value))
     }
 }
 
@@ -56,12 +79,31 @@ impl Context {
 #[repr(transparent)]
 pub struct UniqueName(Rc<WithSpan<ustr::Ustr>>);
 
+impl Display for UniqueName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name().fmt(f)
+    }
+}
+
 impl UniqueName {
     fn new<T: Into<ustr::Ustr>>(name: T, span: SimpleSpan) -> Self {
         Self(Rc::new(WithSpan(name.into(), span)))
     }
     fn fresh(span: SimpleSpan) -> Self {
         Self(Rc::new(WithSpan("$x".into(), span)))
+    }
+    fn refresh(&self) -> Self {
+        Self(Rc::new(*self.0))
+    }
+    fn fresh_in<F>(&self, lookup: F) -> Self
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        if lookup(self) {
+            Self::fresh(self.span())
+        } else {
+            self.clone()
+        }
     }
     fn span(&self) -> SimpleSpan {
         self.0.1
