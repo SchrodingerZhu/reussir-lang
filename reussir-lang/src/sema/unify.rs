@@ -176,113 +176,115 @@ fn solve_meta(meta: usize, spine: &Spine, rhs: ValuePtr, global: &Context) -> Re
     Ok(())
 }
 
-fn unify(lhs: ValuePtr, rhs: ValuePtr, global: &Context) -> Result<(), Error> {
-    let unify = |lhs, rhs| {
-        stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
-            crate::sema::unify::unify(lhs, rhs, global)
-        })
-    };
-    let lhs = force(lhs, global);
-    let rhs = force(rhs, global);
-    let get_fresh_var = |n: &UniqueName| {
-        let fresh = n.refresh();
-        Rc::new(WithSpan(
-            Value::Rigid(fresh.clone(), empty_spine()),
-            fresh.span(),
-        ))
-    };
-    let unify_spine = |x: &Spine, y: &Spine| {
-        if x.len() != y.len() {
-            return Err(Error::RigidMismatch);
-        }
-        for (x, y) in x.iter().cloned().zip(y.iter().cloned()) {
-            unify(x.value, y.value)?;
-        }
-        Ok(())
-    };
-    match (&**lhs, &**rhs) {
-        (
-            Value::Lambda {
-                name: n0, body: b0, ..
-            },
-            Value::Lambda {
-                name: n1, body: b1, ..
-            },
-        ) => {
-            let var = get_fresh_var(n0);
-            let lhs = b0(n0.clone(), var.clone(), global);
-            let rhs = b1(n1.clone(), var, global);
-            unify(lhs, rhs)
-        }
-        // eta expansion
-        (
-            _,
-            Value::Lambda {
-                name: n,
-                body: b,
-                implicit,
-            },
-        ) => {
-            let var = get_fresh_var(n);
-            let lhs = value_apply(
-                lhs.clone(),
-                SpineItem::new(var.clone(), *implicit),
-                lhs.1,
-                global,
-            );
-            let rhs = b(n.clone(), var, global);
-            unify(lhs, rhs)
-        }
-        (
-            Value::Lambda {
-                name: n,
-                body: b,
-                implicit,
-            },
-            _,
-        ) => {
-            let var = get_fresh_var(n);
-            let rhs = value_apply(
-                rhs.clone(),
-                SpineItem::new(var.clone(), *implicit),
-                rhs.1,
-                global,
-            );
-            let lhs = b(n.clone(), var, global);
-            unify(lhs, rhs)
-        }
-        (Value::Stuck(x), Value::Stuck(y)) if x.is_alpha_equivalent(y) => Ok(()),
-        (Value::Universe, Value::Universe) => Ok(()),
-        (
-            Value::Pi {
-                name: n0,
-                arg: a0,
-                body: b0,
-                implicit: i0,
-            },
-            Value::Pi {
-                name: n1,
-                arg: a1,
-                body: b1,
-                implicit: i1,
-            },
-        ) if i0 == i1 => {
-            unify(a0.clone(), a1.clone())?;
-            let var = get_fresh_var(n0);
-            let lhs = b0(n0.clone(), var.clone(), global);
-            let rhs = b1(n1.clone(), var, global);
-            unify(lhs, rhs)
-        }
-        (Value::Rigid(n0, spine0), Value::Rigid(n1, spine1)) if n0 == n1 => {
-            unify_spine(spine0, spine1)
-        }
-        (Value::Flex(m0, spine0), Value::Flex(m1, spine1)) if m0 == m1 => {
-            unify_spine(spine0, spine1)
-        }
-        // unification
-        (Value::Flex(m, spine), _) => solve_meta(*m, spine, rhs, global),
-        (_, Value::Flex(m, spine)) => solve_meta(*m, spine, lhs, global),
-        _ => Err(Error::RigidMismatch),
+pub fn unify(mut lhs: ValuePtr, mut rhs: ValuePtr, global: &Context) -> Result<(), Error> {
+    loop {
+        let unify = |lhs, rhs| {
+            stacker::maybe_grow(32 * 1024, 1024 * 1024, || {
+                crate::sema::unify::unify(lhs, rhs, global)
+            })
+        };
+        lhs = force(lhs, global);
+        rhs = force(rhs, global);
+        let get_fresh_var = |n: &UniqueName| {
+            let fresh = n.refresh();
+            Rc::new(WithSpan(
+                Value::Rigid(fresh.clone(), empty_spine()),
+                fresh.span(),
+            ))
+        };
+        let unify_spine = |x: &Spine, y: &Spine| {
+            if x.len() != y.len() {
+                return Err(Error::RigidMismatch);
+            }
+            for (x, y) in x.iter().cloned().zip(y.iter().cloned()) {
+                unify(x.value, y.value)?;
+            }
+            Ok(())
+        };
+        return match (&**lhs, &**rhs) {
+            (
+                Value::Lambda {
+                    name: n0, body: b0, ..
+                },
+                Value::Lambda {
+                    name: n1, body: b1, ..
+                },
+            ) => {
+                let var = get_fresh_var(n0);
+                lhs = b0(n0.clone(), var.clone(), global);
+                rhs = b1(n1.clone(), var, global);
+                continue;
+            }
+            // eta expansion
+            (
+                _,
+                Value::Lambda {
+                    name: n,
+                    body: b,
+                    implicit,
+                },
+            ) => {
+                let var = get_fresh_var(n);
+                lhs = value_apply(
+                    lhs.clone(),
+                    SpineItem::new(var.clone(), *implicit),
+                    lhs.1,
+                    global,
+                );
+                rhs = b(n.clone(), var, global);
+                continue;
+            }
+            (
+                Value::Lambda {
+                    name: n,
+                    body: b,
+                    implicit,
+                },
+                _,
+            ) => {
+                let var = get_fresh_var(n);
+                rhs = value_apply(
+                    rhs.clone(),
+                    SpineItem::new(var.clone(), *implicit),
+                    rhs.1,
+                    global,
+                );
+                lhs = b(n.clone(), var, global);
+                continue;
+            }
+            (Value::Stuck(x), Value::Stuck(y)) if x.is_alpha_equivalent(y) => Ok(()),
+            (Value::Universe, Value::Universe) => Ok(()),
+            (
+                Value::Pi {
+                    name: n0,
+                    arg: a0,
+                    body: b0,
+                    implicit: i0,
+                },
+                Value::Pi {
+                    name: n1,
+                    arg: a1,
+                    body: b1,
+                    implicit: i1,
+                },
+            ) if i0 == i1 => {
+                unify(a0.clone(), a1.clone())?;
+                let var = get_fresh_var(n0);
+                lhs = b0(n0.clone(), var.clone(), global);
+                rhs = b1(n1.clone(), var, global);
+                continue;
+            }
+            (Value::Rigid(n0, spine0), Value::Rigid(n1, spine1)) if n0 == n1 => {
+                unify_spine(spine0, spine1)
+            }
+            (Value::Flex(m0, spine0), Value::Flex(m1, spine1)) if m0 == m1 => {
+                unify_spine(spine0, spine1)
+            }
+            // unification
+            (Value::Flex(m, spine), _) => solve_meta(*m, spine, rhs, global),
+            (_, Value::Flex(m, spine)) => solve_meta(*m, spine, lhs, global),
+            _ => Err(Error::RigidMismatch),
+        };
     }
 }
 

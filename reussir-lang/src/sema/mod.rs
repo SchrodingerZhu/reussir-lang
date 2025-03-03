@@ -1,6 +1,6 @@
 #![allow(unused)]
 mod term;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use chumsky::span::SimpleSpan;
 use rustc_hash::FxHashMapRand;
@@ -78,6 +78,12 @@ impl Context {
 #[derive(Clone, Eq)]
 #[repr(transparent)]
 pub struct UniqueName(Rc<WithSpan<ustr::Ustr>>);
+
+impl Display for UniqueName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name().fmt(f)
+    }
+}
 
 impl UniqueName {
     fn new<T: Into<ustr::Ustr>>(name: T, span: SimpleSpan) -> Self {

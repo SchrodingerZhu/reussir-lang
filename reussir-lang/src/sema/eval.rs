@@ -133,6 +133,7 @@ pub fn evaluate(ctx: Environment<'_>, term: TermPtr) -> ValuePtr {
         Term::Universe => Rc::new(WithSpan(Value::Universe, term.1)),
         Term::Let {
             name,
+            ty: _,
             binding,
             body,
         } => {

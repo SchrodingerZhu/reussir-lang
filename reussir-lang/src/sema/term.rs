@@ -9,7 +9,7 @@ use ustr::Ustr;
 use crate::syntax::WithSpan;
 pub type TermPtr = Rc<WithSpan<Term>>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Term {
     /// Integer literal
     Integer(rug::Integer),
@@ -66,6 +66,7 @@ pub enum Term {
     /// Let binding
     Let {
         name: UniqueName,
+        ty: Option<TermPtr>,
         binding: TermPtr,
         body: TermPtr,
     },
@@ -90,6 +91,8 @@ pub enum Term {
     StrTy,
     BooleanTy,
     Universe,
+    // A hole whose meta variable is not yet assigned
+    Hole,
     Meta(usize),
     InsertedMeta(usize, Queue<UniqueName>),
     CheckVar,
@@ -220,9 +223,20 @@ impl std::fmt::Display for Term {
             }
             Term::Let {
                 name,
+                ty,
                 binding,
                 body,
-            } => todo!(),
+            } => {
+                if let Some(ty) = ty {
+                    write!(
+                        f,
+                        "let {} : {} = {} in {}",
+                        **name.0, ty.0, binding.0, body.0
+                    )
+                } else {
+                    write!(f, "let {} = {} in {}", **name.0, binding.0, body.0)
+                }
+            }
             Term::Seq(gc, gc1) => todo!(),
             Term::IntTy(_) => todo!(),
             Term::FloatTy(_) => todo!(),
@@ -232,7 +246,9 @@ impl std::fmt::Display for Term {
                 body,
                 implicit,
             } => {
-                if !implicit {
+                if (**name.0).is_empty() {
+                    write!(f, "{} -> {}", arg.0, body.0)
+                } else if !implicit {
                     write!(f, "Π({} : {}).{}", **name.0, arg.0, body.0)
                 } else {
                     write!(f, "Π{{{} : {}}}.{}", **name.0, arg.0, body.0)
@@ -243,12 +259,13 @@ impl std::fmt::Display for Term {
             }
             Term::StrTy => todo!(),
             Term::BooleanTy => todo!(),
-            Term::Universe => todo!(),
+            Term::Universe => write!(f, "U"),
             Term::Meta(x) | Term::InsertedMeta(x, _) => write!(f, "?{x}"),
             Term::CheckVar => todo!(),
             Term::Invalid => write!(f, "<invalid>"),
             Term::UnitTy => write!(f, "()"),
             Term::NeverTy => write!(f, "!"),
+            Term::Hole => write!(f, "_"),
         })
     }
 }
@@ -281,6 +298,68 @@ pub(crate) mod test {
                 fake_span,
             ))
         })
+    }
+
+    pub(crate) fn universe() -> TermPtr {
+        Rc::new(WithSpan(Term::Universe, SimpleSpan::new(0, 0)))
+    }
+
+    pub(crate) fn hole() -> TermPtr {
+        Rc::new(WithSpan(Term::Hole, SimpleSpan::new(0, 0)))
+    }
+
+    pub(crate) fn r#let<F>(name: &str, binding: TermPtr, ty: TermPtr, b: F) -> TermPtr
+    where
+        F: FnOnce(TermPtr) -> TermPtr,
+    {
+        let fake_span = SimpleSpan::new(0, 0);
+        let name = UniqueName::new(name, fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        let body = b(var);
+        let ty = Some(ty);
+        Rc::new(WithSpan(
+            Term::Let {
+                name,
+                ty,
+                binding,
+                body,
+            },
+            fake_span,
+        ))
+    }
+
+    pub(crate) fn pi<F>(name: &str, implicit: bool, arg: TermPtr, body: F) -> TermPtr
+    where
+        F: FnOnce(TermPtr) -> TermPtr,
+    {
+        let fake_span = SimpleSpan::new(0, 0);
+        let name = UniqueName::new(name, fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        let body = body(var);
+        Rc::new(WithSpan(
+            Term::Pi {
+                name,
+                body,
+                arg,
+                implicit,
+            },
+            fake_span,
+        ))
+    }
+
+    pub(crate) fn arrow(x: TermPtr, y: TermPtr) -> TermPtr {
+        let fake_span = SimpleSpan::new(0, 0);
+        let name = UniqueName::new("", fake_span);
+        let var = Rc::new(WithSpan(Term::Var(name.clone()), fake_span));
+        Rc::new(WithSpan(
+            Term::Pi {
+                name,
+                body: y,
+                arg: x,
+                implicit: false,
+            },
+            fake_span,
+        ))
     }
 
     pub(crate) fn app<const N: usize>(f: TermPtr, x: [TermPtr; N]) -> TermPtr {
