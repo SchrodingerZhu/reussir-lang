@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [ "reussir-lang","reussir-lang-legacy", "reussir-runtime"]
+members = ["reussir-lang", "reussir-runtime"]
 
 [profile.release]
 lto = "thin"
