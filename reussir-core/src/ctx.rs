@@ -4,7 +4,7 @@ use crate::{
     eval::quote,
     meta::MetaContext,
     term::TermPtr,
-    utils::{Environment, Icit, Pruning, UniqueName, with_span},
+    utils::{with_span, Environment, Icit, Pruning, UniqueName},
     value::{self, Value, ValuePtr},
 };
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct Context {
 impl Context {
     pub fn new() -> Self {
         Self {
-            env: HashTrieMap::new(),
+            env: Environment::new(),
             locals: Vector::new(),
             pruning: Pruning::new(),
             name_types: HashTrieMap::new(),

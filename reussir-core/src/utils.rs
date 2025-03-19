@@ -1,6 +1,8 @@
 use std::{fmt::Display, hash::Hash, ops::Deref, rc::Rc};
 
+use archery::RcK;
 use rpds::{HashTrieMap, Vector};
+use rustc_hash::FxRandomState;
 
 use crate::{
     meta::MetaContext,
@@ -113,7 +115,6 @@ pub enum Icit {
 }
 
 pub type Pruning = Vector<(UniqueName, Icit)>;
-pub type Environment = HashTrieMap<UniqueName, ValuePtr>;
 pub type Spine = Vector<(ValuePtr, Icit)>;
 
 #[derive(Debug, Clone)]
@@ -133,12 +134,34 @@ pub fn with_span<T>(data: T, start: usize, end: usize) -> Rc<WithSpan<T>> {
     Rc::new(WithSpan { data, start, end })
 }
 
-pub fn with_var<F, R>(env: &mut Environment, name: UniqueName, value: ValuePtr, f: F) -> R
-where
-    F: FnOnce(&mut Environment) -> R,
-{
-    env.insert_mut(name.clone(), value.clone());
-    let res = f(env);
-    env.remove_mut(&name);
-    res
+#[derive(Clone)]
+pub struct Environment(HashTrieMap<UniqueName, ValuePtr, RcK, FxRandomState>);
+
+impl std::fmt::Debug for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.0.iter()).finish()
+    }
+}
+
+impl Environment {
+    pub fn new() -> Self {
+        Self(HashTrieMap::new_with_hasher_and_ptr_kind(
+            FxRandomState::default(),
+        ))
+    }
+    pub fn with_var<F, R>(&mut self, name: UniqueName, value: ValuePtr, f: F) -> R
+    where
+        F: FnOnce(&mut Environment) -> R,
+    {
+        self.0.insert_mut(name.clone(), value.clone());
+        let res = f(self);
+        self.0.remove_mut(&name);
+        res
+    }
+    pub fn insert_mut(&mut self, name: UniqueName, value: ValuePtr) {
+        self.0.insert_mut(name, value);
+    }
+    pub fn remove_mut(&mut self, name: &UniqueName) {
+        self.0.remove_mut(name);
+    }
 }
