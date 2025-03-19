@@ -1,0 +1,15 @@
+[package]
+name = "reussir-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+archery = "1.2.1"
+rpds = "1.1.0"
+rustc-hash = { version = "2.1.1", features = ["rand"] }
+smallvec = "1.14.0"
+stacker = "0.1.20"
+thiserror = "2.0.12"
+tinyset = "0.5.2"
+tracing = "0.1.41"
+ustr = "1.1.0"

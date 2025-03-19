@@ -2,12 +2,13 @@ use std::rc::Rc;
 
 use super::{FieldName, QualifiedName, UniqueName};
 use dynforest::{Connection, Handle as ConnHandle};
-use rpds::Queue;
+use rpds::{Queue, Vector};
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use ustr::Ustr;
 
 use crate::syntax::WithSpan;
 pub type TermPtr = Rc<WithSpan<Term>>;
+pub type Pruning = Vector<(UniqueName, bool)>;
 
 #[derive(Debug, Clone)]
 pub enum Term {
@@ -38,6 +39,7 @@ pub enum Term {
         /// implicit
         bool,
     ),
+    AppPruning(TermPtr, Pruning),
     /// project a field out of a record
     Proj {
         value: TermPtr,
@@ -94,8 +96,8 @@ pub enum Term {
     // A hole whose meta variable is not yet assigned
     Hole,
     Meta(usize),
+    Postponed(usize),
     InsertedMeta(usize, Queue<UniqueName>),
-    CheckVar,
     Invalid,
 }
 
@@ -261,11 +263,22 @@ impl std::fmt::Display for Term {
             Term::BooleanTy => todo!(),
             Term::Universe => write!(f, "U"),
             Term::Meta(x) | Term::InsertedMeta(x, _) => write!(f, "?{x}"),
-            Term::CheckVar => todo!(),
             Term::Invalid => write!(f, "<invalid>"),
             Term::UnitTy => write!(f, "()"),
             Term::NeverTy => write!(f, "!"),
             Term::Hole => write!(f, "_"),
+            Term::Postponed(x) => write!(f, "??{x}"),
+            Term::AppPruning(gc, pruning) => {
+                write!(f, "{}", gc.0)?;
+                for (name, implicit) in pruning.iter() {
+                    if !implicit {
+                        write!(f, " {}", name.0.0)?;
+                    } else {
+                        write!(f, " {{{}}}", name.0.0)?;
+                    }
+                }
+                Ok(())
+            }
         })
     }
 }
