@@ -3,11 +3,11 @@ use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
 use crate::{
-    Result,
     meta::MetaContext,
     term::TermPtr,
-    utils::{Icit, UniqueName},
+    utils::{with_span, Icit, Spine, UniqueName},
     value::{Value, ValuePtr},
+    Error, Result,
 };
 
 #[derive(Clone)]
@@ -54,11 +54,33 @@ impl Environment {
     }
 }
 
-pub fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
+fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
+    let span_min = lhs.start.min(rhs.start);
+    let span_max = lhs.end.max(rhs.end);
     match lhs.data() {
         Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
-        _ => todo!(),
+        Value::Flex(meta, spine) => Ok(with_span(
+            Value::Flex(meta.clone(), spine.push_back((rhs, icit))),
+            span_min,
+            span_max,
+        )),
+        Value::Rigid(name, spine) => Ok(with_span(
+            Value::Rigid(name.clone(), spine.push_back((rhs, icit))),
+            span_min,
+            span_max,
+        )),
+        _ => Err(Error::internal(format!(
+            "Cannot apply {:?} to {:?}",
+            lhs, rhs
+        ))),
     }
+}
+
+fn app_spine(value: ValuePtr, spine: &Spine, meta: &MetaContext) -> Result<ValuePtr> {
+    spine
+        .iter()
+        .cloned()
+        .try_fold(value, |acc, (arg, icit)| app_val(acc, arg, icit, meta))
 }
 
 pub fn quote(value: ValuePtr, global: &MetaContext) -> TermPtr {

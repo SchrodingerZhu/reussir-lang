@@ -2,7 +2,13 @@ use std::cell::RefCell;
 
 use tinyset::SetUsize;
 
-use crate::{Error, Result, ctx::Context, term::TermPtr, value::ValuePtr};
+use crate::{
+    ctx::Context,
+    term::TermPtr,
+    utils::with_span,
+    value::{Value, ValuePtr},
+    Error, Result,
+};
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -58,6 +64,16 @@ impl MetaContext {
             meta,
         });
         var
+    }
+    pub fn get_meta_value(&self, var: MetaVar, start: usize, end: usize) -> Result<ValuePtr> {
+        let metas = self.metas.borrow();
+        match metas.get(var.0) {
+            Some(MetaEntry::Solved { val, .. }) => Ok(val.clone()),
+            Some(MetaEntry::Unsolved { .. }) => {
+                Ok(with_span(Value::Flex(var, Default::default()), start, end))
+            }
+            None => Err(Error::internal("invalid meta variable".to_string())),
+        }
     }
     pub fn get_check<F, R>(&self, var: CheckVar) -> Result<CheckEntry> {
         let checks = self.checks.borrow();
