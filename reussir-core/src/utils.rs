@@ -1,13 +1,8 @@
-use std::{fmt::Display, hash::Hash, ops::Deref, rc::Rc};
+use std::{fmt::Display, ops::Deref, rc::Rc};
 
-use archery::RcK;
-use rpds::{HashTrieMap, Vector};
-use rustc_hash::FxRandomState;
+use rpds::Vector;
 
-use crate::{
-    meta::MetaContext,
-    value::{self, ValuePtr},
-};
+use crate::{eval::Environment, value::ValuePtr};
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {
@@ -132,36 +127,4 @@ pub fn empty_spine() -> Spine {
 
 pub fn with_span<T>(data: T, start: usize, end: usize) -> Rc<WithSpan<T>> {
     Rc::new(WithSpan { data, start, end })
-}
-
-#[derive(Clone)]
-pub struct Environment(HashTrieMap<UniqueName, ValuePtr, RcK, FxRandomState>);
-
-impl std::fmt::Debug for Environment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_map().entries(self.0.iter()).finish()
-    }
-}
-
-impl Environment {
-    pub fn new() -> Self {
-        Self(HashTrieMap::new_with_hasher_and_ptr_kind(
-            FxRandomState::default(),
-        ))
-    }
-    pub fn with_var<F, R>(&mut self, name: UniqueName, value: ValuePtr, f: F) -> R
-    where
-        F: FnOnce(&mut Environment) -> R,
-    {
-        self.0.insert_mut(name.clone(), value.clone());
-        let res = f(self);
-        self.0.remove_mut(&name);
-        res
-    }
-    pub fn insert_mut(&mut self, name: UniqueName, value: ValuePtr) {
-        self.0.insert_mut(name, value);
-    }
-    pub fn remove_mut(&mut self, name: &UniqueName) {
-        self.0.remove_mut(name);
-    }
 }

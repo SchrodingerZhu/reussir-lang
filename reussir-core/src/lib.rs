@@ -2,13 +2,13 @@ use std::backtrace::Backtrace;
 
 use thiserror::Error;
 
-mod ctx;
-mod elab;
-mod eval;
-mod meta;
-mod term;
-mod utils;
-mod value;
+pub mod ctx;
+pub mod elab;
+pub mod eval;
+pub mod meta;
+pub mod term;
+pub mod utils;
+pub mod value;
 
 #[derive(Error, Debug)]
 pub enum Error {

@@ -35,6 +35,12 @@ pub struct MetaContext {
     metas: RefCell<Vec<MetaEntry>>,
 }
 
+impl Default for MetaContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetaContext {
     pub fn new() -> Self {
         Self {

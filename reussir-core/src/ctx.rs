@@ -1,11 +1,11 @@
 use rpds::{HashTrieMap, Vector};
 
 use crate::{
-    eval::quote,
+    eval::{Environment, quote},
     meta::MetaContext,
     term::TermPtr,
-    utils::{with_span, Environment, Icit, Pruning, UniqueName},
-    value::{self, Value, ValuePtr},
+    utils::{Icit, Pruning, UniqueName, with_span},
+    value::{Value, ValuePtr},
 };
 #[derive(Debug, Clone)]
 pub struct Context {
@@ -13,6 +13,12 @@ pub struct Context {
     locals: Vector<(UniqueName, VarKind)>,
     pruning: Pruning,
     name_types: HashTrieMap<UniqueName, ValuePtr>,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Context {
