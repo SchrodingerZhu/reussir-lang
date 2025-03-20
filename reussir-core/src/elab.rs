@@ -1,4 +1,4 @@
-
+use rustc_hash::FxHashMapRand;
 use thiserror::Error;
 use tracing::trace;
 
@@ -8,7 +8,7 @@ use crate::{
     eval::{Environment, quote},
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
-    utils::{Icit, with_span},
+    utils::{Icit, UniqueName, with_span},
     value::{Value, ValuePtr},
 };
 
@@ -108,12 +108,11 @@ impl Elaborator {
         Ok(())
     }
     pub fn check_all(&mut self) -> Result<()> {
-        trace!(
-            "checking all delayed checks ({} in total)",
-            self.meta.num_checks()
-        );
         for var in self.meta.check_vars() {
-            trace!("checking {var:?}");
+            trace!(
+                "checking all delay checkes (crreunt {var:?}, {} in total)",
+                self.meta.num_checks()
+            );
             let CheckEntry::Unchecked {
                 ctx,
                 term,
@@ -184,5 +183,23 @@ impl Elaborator {
     }
     pub fn check(&mut self, term: TermPtr, ty: ValuePtr) -> Result<TermPtr> {
         todo!("check")
+    }
+}
+
+struct PartialRenaming {
+    map: FxHashMapRand<UniqueName, UniqueName>,
+    inversion: Vec<(UniqueName, Icit)>,
+    occ: Option<MetaVar>,
+}
+impl PartialRenaming {
+    fn locally<F, R>(&mut self, name: UniqueName, f: F) -> R
+    where
+        F: for<'a> FnOnce(&'a mut Self, UniqueName) -> R,
+    {
+        let fresh = name.refresh();
+        self.map.insert(name.clone(), fresh.clone());
+        let res = f(self, fresh);
+        self.map.remove(&name);
+        res
     }
 }
