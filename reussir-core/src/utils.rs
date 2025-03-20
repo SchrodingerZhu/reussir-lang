@@ -2,7 +2,7 @@ use std::{fmt::Display, ops::Deref, rc::Rc};
 
 use rpds::Vector;
 
-use crate::{eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
+use crate::{Result, eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {
@@ -32,6 +32,12 @@ impl<T> Deref for WithSpan<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> WithSpan<T> {
+    pub fn data(&self) -> &T {
         &self.data
     }
 }
@@ -133,7 +139,7 @@ impl Closure {
     pub fn new(env: Environment, body: TermPtr) -> Self {
         Self { env, body }
     }
-    pub fn eval(&self, name: UniqueName, arg: ValuePtr, meta: &MetaContext) -> ValuePtr {
+    pub fn apply(&self, name: UniqueName, arg: ValuePtr, meta: &MetaContext) -> Result<ValuePtr> {
         let mut env = self.env.insert(name, arg);
         env.evaluate(self.body.clone(), meta)
     }

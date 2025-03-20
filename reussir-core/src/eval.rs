@@ -2,7 +2,13 @@ use archery::RcK;
 use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
-use crate::{meta::MetaContext, term::TermPtr, utils::UniqueName, value::ValuePtr};
+use crate::{
+    Result,
+    meta::MetaContext,
+    term::TermPtr,
+    utils::{Icit, UniqueName},
+    value::{Value, ValuePtr},
+};
 
 #[derive(Clone)]
 pub struct Environment(HashTrieMap<UniqueName, ValuePtr, RcK, FxRandomState>);
@@ -43,8 +49,15 @@ impl Environment {
     pub fn insert(&self, name: UniqueName, value: ValuePtr) -> Self {
         Self(self.0.insert(name, value))
     }
-    pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> ValuePtr {
+    pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         todo!()
+    }
+}
+
+pub fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
+    match lhs.data() {
+        Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
+        _ => todo!(),
     }
 }
 
