@@ -5,7 +5,7 @@ use tinyset::SetUsize;
 use crate::{
     Error, Result,
     ctx::Context,
-    eval::Environment,
+    eval::{Environment, app_spine},
     term::TermPtr,
     utils::with_span,
     value::{Value, ValuePtr},
@@ -84,7 +84,7 @@ impl MetaContext {
         match checks.get(var.0) {
             Some(CheckEntry::Checked(term)) => env.evaluate(term.clone(), self),
             Some(CheckEntry::Unchecked { ctx, meta, .. }) => {
-                env.app_pruning(self.get_meta_value(*meta, span)?, &ctx.pruning, self)
+                env.app_pruning(self.get_meta_value(*meta, span)?, &ctx.pruning, self, span)
             }
             None => Err(Error::internal("invalid check variable")),
         }
@@ -122,7 +122,7 @@ impl MetaContext {
         let mut metas = self.metas.borrow_mut();
         match metas.get_mut(var.0) {
             Some(entry) => conti(entry),
-            None => Err(Error::internal("invalid meta variable".to_string())),
+            None => Err(Error::internal("invalid meta variable")),
         }
     }
     pub fn add_blocker(&self, chk: CheckVar, meta: MetaVar) -> Result<()> {
@@ -132,10 +132,20 @@ impl MetaContext {
                 blocking.insert(chk.0);
                 Ok(())
             }
-            Some(MetaEntry::Solved { .. }) => {
-                Err(Error::internal("meta variable already solved".to_string()))
-            }
-            None => Err(Error::internal("invalid meta variable".to_string())),
+            Some(MetaEntry::Solved { .. }) => Err(Error::internal("meta variable already solved")),
+            None => Err(Error::internal("invalid meta variable")),
+        }
+    }
+    pub fn force(&self, val: ValuePtr) -> Result<ValuePtr> {
+        match val.data() {
+            Value::Flex(m, sp) => match self.metas.borrow().get(m.0) {
+                Some(MetaEntry::Unsolved { .. }) => Ok(val),
+                Some(MetaEntry::Solved { val, .. }) => {
+                    self.force(app_spine(val.clone(), sp, self, val.span)?)
+                }
+                None => Err(Error::internal("invalid meta variable")),
+            },
+            _ => Ok(val),
         }
     }
 }

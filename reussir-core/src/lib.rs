@@ -1,5 +1,6 @@
 use std::{backtrace::Backtrace, borrow::Cow};
 
+use meta::MetaVar;
 use thiserror::Error;
 use utils::UniqueName;
 
@@ -17,6 +18,8 @@ pub enum Error {
     Internal(Cow<'static, str>, Box<Backtrace>),
     #[error("failed to resolve variable {0} within context")]
     UnresolvedVariable(UniqueName),
+    #[error("failed to resolve meta {0:?} within context")]
+    UnresolvedMeta(MetaVar),
 }
 
 impl Error {
@@ -25,6 +28,9 @@ impl Error {
     }
     pub fn unresolved_variable(name: UniqueName) -> Self {
         Self::UnresolvedVariable(name)
+    }
+    pub fn unresolved_meta(meta: MetaVar) -> Self {
+        Self::UnresolvedMeta(meta)
     }
 }
 

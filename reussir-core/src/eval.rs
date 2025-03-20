@@ -6,7 +6,7 @@ use crate::{
     Error, Result,
     meta::MetaContext,
     term::TermPtr,
-    utils::{Closure, Icit, Pruning, Spine, UniqueName, with_span_as},
+    utils::{Closure, Icit, Pruning, Spine, UniqueName, with_span, with_span_as},
     value::{Value, ValuePtr},
 };
 
@@ -69,11 +69,12 @@ impl Environment {
             crate::term::Term::App(lhs, rhs, icit) => {
                 let lhs = self.evaluate(lhs.clone(), meta)?;
                 let rhs = self.evaluate(rhs.clone(), meta)?;
-                app_val(lhs, rhs, *icit, meta)
+                app_val(lhs, rhs, *icit, meta, term.span)
             }
             crate::term::Term::AppPruning(term, pruning) => {
+                let span = term.span;
                 let term = self.evaluate(term.clone(), meta)?;
-                self.app_pruning(term, pruning, meta)
+                self.app_pruning(term, pruning, meta, span)
             }
             crate::term::Term::Universe => Ok(with_span_as(Value::Universe, term)),
             crate::term::Term::Pi(name, icit, ty, body) => {
@@ -99,26 +100,33 @@ impl Environment {
         value: ValuePtr,
         pruning: &Pruning,
         meta: &MetaContext,
+        span: (usize, usize),
     ) -> Result<ValuePtr> {
         pruning.iter().try_fold(value, |acc, (name, icit)| {
             let var = self.0.get(name).ok_or_else(|| {
                 Error::internal(format!("Variable {:?} not found in environment", name))
             })?;
-            app_val(acc, var.clone(), *icit, meta)
+            app_val(acc, var.clone(), *icit, meta, span)
         })
     }
 }
 
-fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
+pub(crate) fn app_val(
+    lhs: ValuePtr,
+    rhs: ValuePtr,
+    icit: Icit,
+    meta: &MetaContext,
+    span: (usize, usize),
+) -> Result<ValuePtr> {
     match lhs.data() {
         Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
-        Value::Flex(meta, spine) => Ok(with_span_as(
+        Value::Flex(meta, spine) => Ok(with_span(
             Value::Flex(*meta, spine.push_back((rhs, icit))),
-            lhs,
+            span,
         )),
-        Value::Rigid(name, spine) => Ok(with_span_as(
+        Value::Rigid(name, spine) => Ok(with_span(
             Value::Rigid(name.clone(), spine.push_back((rhs, icit))),
-            lhs,
+            span,
         )),
         _ => Err(Error::internal(format!(
             "Cannot apply {:?} to {:?}",
@@ -127,11 +135,15 @@ fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Resu
     }
 }
 
-fn app_spine(value: ValuePtr, spine: &Spine, meta: &MetaContext) -> Result<ValuePtr> {
-    spine
-        .iter()
-        .cloned()
-        .try_fold(value, |acc, (arg, icit)| app_val(acc, arg, icit, meta))
+pub(crate) fn app_spine(
+    value: ValuePtr,
+    spine: &Spine,
+    meta: &MetaContext,
+    span: (usize, usize),
+) -> Result<ValuePtr> {
+    spine.iter().cloned().try_fold(value, |acc, (arg, icit)| {
+        app_val(acc, arg, icit, meta, span)
+    })
 }
 
 pub fn quote(value: ValuePtr, global: &MetaContext) -> TermPtr {
