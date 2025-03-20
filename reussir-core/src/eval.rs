@@ -40,6 +40,12 @@ impl Environment {
     pub fn remove_mut(&mut self, name: &UniqueName) {
         self.0.remove_mut(name);
     }
+    pub fn insert(&self, name: UniqueName, value: ValuePtr) -> Self {
+        Self(self.0.insert(name, value))
+    }
+    pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> ValuePtr {
+        todo!()
+    }
 }
 
 pub fn quote(value: ValuePtr, global: &MetaContext) -> TermPtr {

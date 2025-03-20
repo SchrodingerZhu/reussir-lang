@@ -2,7 +2,7 @@ use std::{fmt::Display, ops::Deref, rc::Rc};
 
 use rpds::Vector;
 
-use crate::{eval::Environment, value::ValuePtr};
+use crate::{eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {
@@ -114,8 +114,8 @@ pub type Spine = Vector<(ValuePtr, Icit)>;
 
 #[derive(Debug, Clone)]
 pub struct Closure {
-    pub env: Environment,
-    pub body: ValuePtr,
+    env: Environment,
+    body: TermPtr,
 }
 
 pub fn empty_spine() -> Spine {
@@ -127,4 +127,14 @@ pub fn empty_spine() -> Spine {
 
 pub fn with_span<T>(data: T, start: usize, end: usize) -> Rc<WithSpan<T>> {
     Rc::new(WithSpan { data, start, end })
+}
+
+impl Closure {
+    pub fn new(env: Environment, body: TermPtr) -> Self {
+        Self { env, body }
+    }
+    pub fn eval(&self, name: UniqueName, arg: ValuePtr, meta: &MetaContext) -> ValuePtr {
+        let mut env = self.env.insert(name, arg);
+        env.evaluate(self.body.clone(), meta)
+    }
 }
