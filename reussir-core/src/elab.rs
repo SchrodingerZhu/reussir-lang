@@ -1,6 +1,6 @@
-use rustc_hash::FxHashMapRand;
+use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use thiserror::Error;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::{
     Result,
@@ -8,7 +8,7 @@ use crate::{
     eval::{Environment, quote},
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
-    utils::{Icit, UniqueName, with_span},
+    utils::{Icit, Pruning, Spine, UniqueName, with_span},
     value::{Value, ValuePtr},
 };
 
@@ -20,6 +20,8 @@ pub enum Error {
     LambdaBinderType,
     #[error("failed to elaborate terms into same types")]
     Placeholder,
+    #[error("unsupported unification patterns")]
+    UnsupportedUnification,
 }
 
 pub struct Elaborator {
@@ -77,7 +79,7 @@ impl Elaborator {
                 let (env, pruning) = self.ctx.env_mut_pruning();
                 let meta = &self.meta;
                 let rhs = env.app_pruning(val.clone(), pruning, meta, val.span)?;
-                self.unify(lhs, rhs)?;
+                self.unify(lhs, rhs, Error::Placeholder)?;
             }
         }
         Ok(())
@@ -127,7 +129,7 @@ impl Elaborator {
                 let (term, ty) = this.apply_implicit_if_neutral(inferred)?;
                 this.meta
                     .set_check(var, CheckEntry::Checked(term.clone()))?;
-                this.unify(expected, ty)?;
+                this.unify(expected, ty, Error::ExpectedInferredMismatch)?;
                 this.unify_placeholder(term, meta)
             })?;
         }
@@ -175,8 +177,20 @@ impl Elaborator {
             self.apply_all_implicit_args((term, ty))
         }
     }
-    pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr) -> Result<()> {
+    pub fn unify_impl(&mut self, lhs: ValuePtr, rhs: ValuePtr) -> Option<()> {
         todo!("unify")
+    }
+    pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
+        self.unify_impl(lhs.clone(), rhs.clone())
+            .ok_or_else(|| {
+                let lhs = quote(lhs, &self.meta)?;
+                let rhs = quote(rhs, &self.meta)?;
+                Ok(crate::Error::UnificationFailure(lhs, rhs, err))
+            })
+            .map_err(|e| match e {
+                Ok(e) => e,
+                Err(e) => e,
+            })
     }
     pub fn infer(&mut self, term: TermPtr) -> Result<(TermPtr, ValuePtr)> {
         todo!("infer")
@@ -191,6 +205,7 @@ struct PartialRenaming {
     inversion: Vec<(UniqueName, Icit)>,
     occ: Option<MetaVar>,
 }
+
 impl PartialRenaming {
     fn locally<F, R>(&mut self, name: UniqueName, f: F) -> R
     where
@@ -201,5 +216,48 @@ impl PartialRenaming {
         let res = f(self, fresh);
         self.map.remove(&name);
         res
+    }
+    fn invert(spine: &Spine, meta: &MetaContext) -> Option<(Self, Option<Pruning>)> {
+        let mut map = FxHashMapRand::default();
+        let mut nonlinear = FxHashSetRand::default();
+        let mut inversion = Vec::new();
+        for (val, icit) in spine.iter().cloned() {
+            let val = meta
+                .force(val)
+                .inspect_err(|e| {
+                    error!("failed force evaluation on meta variable during unification {e}");
+                })
+                .ok()?;
+            let Value::Rigid(x, i) = val.data() else {
+                trace!("unification failed with non-variable pattern");
+                return None;
+            };
+            if map.contains_key(x) || nonlinear.contains(x) {
+                map.remove(x);
+                nonlinear.insert(x.clone());
+            } else {
+                map.insert(x.clone(), x.refresh());
+            }
+            inversion.push((x.clone(), icit));
+        }
+        let pruning = if nonlinear.is_empty() {
+            None
+        } else {
+            Some(
+                inversion
+                    .iter()
+                    .filter(|(x, _)| !nonlinear.contains(x))
+                    .cloned()
+                    .collect(),
+            )
+        };
+        Some((
+            Self {
+                map,
+                inversion,
+                occ: None,
+            },
+            pruning,
+        ))
     }
 }
