@@ -109,6 +109,15 @@ pub enum Icit {
     Impl,
 }
 
+impl std::fmt::Display for Icit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Icit::Expl => write!(f, "explicit"),
+            Icit::Impl => write!(f, "implicit"),
+        }
+    }
+}
+
 pub type Pruning = Vector<(UniqueName, Icit)>;
 pub type Spine = Vector<(ValuePtr, Icit)>;
 

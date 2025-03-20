@@ -1,6 +1,7 @@
 use std::{backtrace::Backtrace, borrow::Cow};
 
 use meta::MetaVar;
+use term::TermPtr;
 use thiserror::Error;
 use utils::UniqueName;
 
@@ -20,6 +21,10 @@ pub enum Error {
     UnresolvedVariable(UniqueName),
     #[error("failed to resolve meta {0:?} within context")]
     UnresolvedMeta(MetaVar),
+    #[error("failed to unify {0:?} with {1:?} ({2})")]
+    UnificationFailure(TermPtr, TermPtr, elab::Error),
+    #[error("icitness mismatch: expected {0}, got {1}")]
+    IcitMismatch(utils::Icit, utils::Icit),
 }
 
 impl Error {

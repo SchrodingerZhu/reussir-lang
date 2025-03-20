@@ -1,10 +1,11 @@
 use rpds::{HashTrieMap, Vector};
+use tracing::span;
 
 use crate::{
     Result,
     eval::{Environment, quote},
     meta::MetaContext,
-    term::TermPtr,
+    term::{Term, TermPtr},
     utils::{Icit, Pruning, UniqueName, with_span},
     value::{Value, ValuePtr},
 };
@@ -100,6 +101,42 @@ impl Context {
         self.locals.drop_last_mut();
         self.env.remove_mut(&name);
         res
+    }
+    pub fn close_term(&self, term: TermPtr, span: (usize, usize)) -> TermPtr {
+        self.locals
+            .iter()
+            .fold(term, |body, (name, kind)| match kind {
+                VarKind::Bound { .. } => {
+                    with_span(Term::Lambda(name.clone(), Icit::Expl, body), span)
+                }
+                VarKind::Defined { term, ty } => with_span(
+                    Term::Let {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        term: term.clone(),
+                        body,
+                    },
+                    span,
+                ),
+            })
+    }
+    pub fn close_type(&self, ty: TermPtr, span: (usize, usize)) -> TermPtr {
+        self.locals
+            .iter()
+            .fold(ty, |body, (name, kind)| match kind {
+                VarKind::Bound { ty } => {
+                    with_span(Term::Pi(name.clone(), Icit::Expl, ty.clone(), body), span)
+                }
+                VarKind::Defined { ty, term } => with_span(
+                    Term::Let {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        term: term.clone(),
+                        body,
+                    },
+                    span,
+                ),
+            })
     }
 }
 
