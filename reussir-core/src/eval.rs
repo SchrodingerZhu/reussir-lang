@@ -5,7 +5,7 @@ use rustc_hash::FxRandomState;
 use crate::{
     Error, Result,
     meta::MetaContext,
-    term::TermPtr,
+    term::{Term, TermPtr},
     utils::{Closure, Icit, Pruning, Spine, UniqueName, with_span, with_span_as},
     value::{Value, ValuePtr},
 };
@@ -146,6 +146,49 @@ pub(crate) fn app_spine(
     })
 }
 
-pub fn quote(value: ValuePtr, global: &MetaContext) -> TermPtr {
-    todo!()
+fn quote_spine(
+    term: TermPtr,
+    spine: &Spine,
+    mctx: &MetaContext,
+    span: (usize, usize),
+) -> Result<TermPtr> {
+    spine.iter().try_fold(term, |acc, (arg, icit)| {
+        let arg = quote(arg.clone(), mctx)?;
+        Ok(with_span(Term::App(acc, arg, *icit), span))
+    })
+}
+
+pub fn quote(value: ValuePtr, mctx: &MetaContext) -> Result<TermPtr> {
+    match value.data() {
+        Value::Flex(meta, spine) => quote_spine(
+            with_span(Term::Meta(*meta), value.span),
+            spine,
+            mctx,
+            value.span,
+        ),
+        Value::Rigid(var, spine) => quote_spine(
+            with_span(Term::Var(var.clone()), value.span),
+            spine,
+            mctx,
+            value.span,
+        ),
+        Value::Lambda(name, icit, closure) => {
+            let arg = with_span(Value::var(name.clone()), name.span());
+            let body = closure.apply(name.clone(), arg, mctx)?;
+            Ok(with_span_as(
+                Term::Lambda(name.clone(), *icit, quote(body, mctx)?),
+                value,
+            ))
+        }
+        Value::Pi(name, icit, arg_ty, closure) => {
+            let arg_ty = quote(arg_ty.clone(), mctx)?;
+            let arg = with_span(Value::var(name.clone()), name.span());
+            let body = closure.apply(name.clone(), arg, mctx)?;
+            Ok(with_span_as(
+                Term::Pi(name.clone(), *icit, arg_ty, quote(body, mctx)?),
+                value,
+            ))
+        }
+        Value::Universe => Ok(with_span_as(Term::Universe, value)),
+    }
 }

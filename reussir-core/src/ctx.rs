@@ -1,6 +1,7 @@
 use rpds::{HashTrieMap, Vector};
 
 use crate::{
+    Result,
     eval::{Environment, quote},
     meta::MetaContext,
     term::TermPtr,
@@ -30,9 +31,15 @@ impl Context {
             name_types: HashTrieMap::new(),
         }
     }
-    pub fn with_bind<F, R>(&mut self, meta: &MetaContext, name: UniqueName, ty: ValuePtr, f: F) -> R
+    pub fn with_bind<F, R>(
+        &mut self,
+        meta: &MetaContext,
+        name: UniqueName,
+        ty: ValuePtr,
+        f: F,
+    ) -> Result<R>
     where
-        F: FnOnce(&mut Self) -> R,
+        F: FnOnce(&mut Self) -> Result<R>,
     {
         self.name_types.insert_mut(name.clone(), ty.clone());
         let res = self.with_binder(meta, name.clone(), ty, f);
@@ -45,18 +52,21 @@ impl Context {
         name: UniqueName,
         ty: ValuePtr,
         f: F,
-    ) -> R
+    ) -> Result<R>
     where
-        F: FnOnce(&mut Self) -> R,
+        F: FnOnce(&mut Self) -> Result<R>,
     {
         let var = with_span(Value::var(name.clone()), name.span());
         self.env.insert_mut(name.clone(), var.clone());
-        self.locals.push_back_mut((
-            name.clone(),
-            VarKind::Bound {
-                ty: quote(ty, meta),
-            },
-        ));
+        let ty = match quote(ty, meta) {
+            Ok(ty) => ty,
+            Err(e) => {
+                self.env.remove_mut(&name);
+                return Err(e);
+            }
+        };
+        self.locals
+            .push_back_mut((name.clone(), VarKind::Bound { ty }));
         self.pruning.push_back_mut((name.clone(), Icit::Expl));
         let res = f(self);
         self.pruning.drop_last_mut();
