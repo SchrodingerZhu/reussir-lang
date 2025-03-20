@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::Deref, rc::Rc};
+use std::{cell::RefCell, fmt::Display, ops::Deref, rc::Rc};
 
 use rpds::Vector;
 
@@ -7,8 +7,7 @@ use crate::{Result, eval::Environment, meta::MetaContext, term::TermPtr, value::
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {
     data: T,
-    pub start: usize,
-    pub end: usize,
+    pub span: (usize, usize),
 }
 
 impl<T: PartialEq> PartialEq for WithSpan<T> {
@@ -53,18 +52,16 @@ impl Display for UniqueName {
 }
 
 impl UniqueName {
-    pub fn new<T: Into<ustr::Ustr>>(name: T, start: usize, end: usize) -> Self {
+    pub fn new<T: Into<ustr::Ustr>>(name: T, span: (usize, usize)) -> Self {
         Self(Rc::new(WithSpan {
             data: name.into(),
-            start,
-            end,
+            span,
         }))
     }
-    pub fn fresh(start: usize, end: usize) -> Self {
+    pub fn fresh(span: (usize, usize)) -> Self {
         Self(Rc::new(WithSpan {
             data: "$x".into(),
-            start,
-            end,
+            span,
         }))
     }
     pub fn refresh(&self) -> Self {
@@ -75,16 +72,13 @@ impl UniqueName {
         F: FnOnce(&Self) -> bool,
     {
         if lookup(self) {
-            Self::fresh(self.0.start, self.0.end)
+            Self::fresh(self.0.span)
         } else {
             self.clone()
         }
     }
-    pub fn start(&self) -> usize {
-        self.0.start
-    }
-    pub fn end(&self) -> usize {
-        self.0.end
+    pub fn span(&self) -> (usize, usize) {
+        self.0.span
     }
     fn name(&self) -> ustr::Ustr {
         self.0.data
@@ -120,7 +114,7 @@ pub type Spine = Vector<(ValuePtr, Icit)>;
 
 #[derive(Debug, Clone)]
 pub struct Closure {
-    env: Environment,
+    env: RefCell<Environment>,
     body: TermPtr,
 }
 
@@ -131,16 +125,27 @@ pub fn empty_spine() -> Spine {
     EMPTY_SPINE.with(|spine| spine.clone())
 }
 
-pub fn with_span<T>(data: T, start: usize, end: usize) -> Rc<WithSpan<T>> {
-    Rc::new(WithSpan { data, start, end })
+pub fn with_span<T>(data: T, span: (usize, usize)) -> Rc<WithSpan<T>> {
+    Rc::new(WithSpan { data, span })
+}
+
+pub fn with_span_as<T, X, Y>(data: T, target: X) -> Rc<WithSpan<T>>
+where
+    X: AsRef<WithSpan<Y>>,
+{
+    Rc::new(WithSpan {
+        data,
+        span: target.as_ref().span,
+    })
 }
 
 impl Closure {
     pub fn new(env: Environment, body: TermPtr) -> Self {
+        let env = RefCell::new(env);
         Self { env, body }
     }
     pub fn apply(&self, name: UniqueName, arg: ValuePtr, meta: &MetaContext) -> Result<ValuePtr> {
-        let mut env = self.env.insert(name, arg);
-        env.evaluate(self.body.clone(), meta)
+        let mut env = self.env.borrow_mut();
+        env.with_var(name, arg, |env| env.evaluate(self.body.clone(), meta))
     }
 }

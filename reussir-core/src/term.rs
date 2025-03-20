@@ -15,8 +15,13 @@ pub enum Term {
     App(TermPtr, TermPtr, Icit),
     AppPruning(TermPtr, Pruning),
     Universe,
-    Pi(Option<UniqueName>, Icit, TermPtr, TermPtr),
-    Let(UniqueName, TermPtr, TermPtr, TermPtr),
+    Pi(UniqueName, Icit, TermPtr, TermPtr),
+    Let {
+        name: UniqueName,
+        ty: TermPtr,
+        term: TermPtr,
+        body: TermPtr,
+    },
     Meta(MetaVar),
     Postponed(CheckVar),
 }

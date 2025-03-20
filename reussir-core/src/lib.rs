@@ -1,6 +1,7 @@
-use std::backtrace::Backtrace;
+use std::{backtrace::Backtrace, borrow::Cow};
 
 use thiserror::Error;
+use utils::UniqueName;
 
 pub mod ctx;
 pub mod elab;
@@ -13,12 +14,17 @@ pub mod value;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("{0}")]
-    Internal(String, Box<Backtrace>),
+    Internal(Cow<'static, str>, Box<Backtrace>),
+    #[error("failed to resolve variable {0} within context")]
+    UnresolvedVariable(UniqueName),
 }
 
 impl Error {
-    pub fn internal<E: std::fmt::Display>(error: E) -> Self {
-        Self::Internal(error.to_string(), Box::new(Backtrace::capture()))
+    pub fn internal<E: Into<Cow<'static, str>>>(error: E) -> Self {
+        Self::Internal(error.into(), Box::new(Backtrace::capture()))
+    }
+    pub fn unresolved_variable(name: UniqueName) -> Self {
+        Self::UnresolvedVariable(name)
     }
 }
 

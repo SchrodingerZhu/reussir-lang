@@ -6,7 +6,7 @@ use crate::{
     Error, Result,
     meta::MetaContext,
     term::TermPtr,
-    utils::{Icit, Pruning, Spine, UniqueName, with_span},
+    utils::{Closure, Icit, Pruning, Spine, UniqueName, with_span_as},
     value::{Value, ValuePtr},
 };
 
@@ -49,8 +49,50 @@ impl Environment {
     pub fn insert(&self, name: UniqueName, value: ValuePtr) -> Self {
         Self(self.0.insert(name, value))
     }
+    pub fn get_var(&self, name: &UniqueName) -> Result<ValuePtr> {
+        self.0
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::unresolved_variable(name.clone()))
+    }
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
-        todo!()
+        match term.data() {
+            crate::term::Term::Hole => Err(Error::internal("Cannot evaluate hole")),
+            crate::term::Term::Var(name) => self.get_var(name),
+            crate::term::Term::Lambda(name, icit, body) => {
+                let closure = Closure::new(self.clone(), body.clone());
+                Ok(with_span_as(
+                    Value::Lambda(name.clone(), *icit, closure),
+                    term,
+                ))
+            }
+            crate::term::Term::App(lhs, rhs, icit) => {
+                let lhs = self.evaluate(lhs.clone(), meta)?;
+                let rhs = self.evaluate(rhs.clone(), meta)?;
+                app_val(lhs, rhs, *icit, meta)
+            }
+            crate::term::Term::AppPruning(term, pruning) => {
+                let term = self.evaluate(term.clone(), meta)?;
+                self.app_pruning(term, pruning, meta)
+            }
+            crate::term::Term::Universe => Ok(with_span_as(Value::Universe, term)),
+            crate::term::Term::Pi(name, icit, ty, body) => {
+                let closure = Closure::new(self.clone(), body.clone());
+                let ty = self.evaluate(ty.clone(), meta)?;
+                Ok(with_span_as(
+                    Value::Pi(name.clone(), *icit, ty, closure),
+                    term,
+                ))
+            }
+            crate::term::Term::Let {
+                name, term, body, ..
+            } => {
+                let term = self.evaluate(term.clone(), meta)?;
+                self.with_var(name.clone(), term, |env| env.evaluate(body.clone(), meta))
+            }
+            crate::term::Term::Meta(m) => meta.get_meta_value(*m, term.span),
+            crate::term::Term::Postponed(c) => meta.get_check_value(self, *c, term.span),
+        }
     }
     pub fn app_pruning(
         &self,
@@ -68,19 +110,15 @@ impl Environment {
 }
 
 fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
-    let span_min = lhs.start.min(rhs.start);
-    let span_max = lhs.end.max(rhs.end);
     match lhs.data() {
         Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
-        Value::Flex(meta, spine) => Ok(with_span(
+        Value::Flex(meta, spine) => Ok(with_span_as(
             Value::Flex(*meta, spine.push_back((rhs, icit))),
-            span_min,
-            span_max,
+            lhs,
         )),
-        Value::Rigid(name, spine) => Ok(with_span(
+        Value::Rigid(name, spine) => Ok(with_span_as(
             Value::Rigid(name.clone(), spine.push_back((rhs, icit))),
-            span_min,
-            span_max,
+            lhs,
         )),
         _ => Err(Error::internal(format!(
             "Cannot apply {:?} to {:?}",

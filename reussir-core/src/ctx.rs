@@ -49,7 +49,7 @@ impl Context {
     where
         F: FnOnce(&mut Self) -> R,
     {
-        let var = with_span(Value::var(name.clone()), name.start(), name.end());
+        let var = with_span(Value::var(name.clone()), name.span());
         self.env.insert_mut(name.clone(), var.clone());
         self.locals.push_back_mut((
             name.clone(),

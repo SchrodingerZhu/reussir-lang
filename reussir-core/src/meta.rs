@@ -66,31 +66,27 @@ impl MetaContext {
         });
         var
     }
-    pub fn get_meta_value(&self, var: MetaVar, start: usize, end: usize) -> Result<ValuePtr> {
+    pub fn get_meta_value(&self, var: MetaVar, span: (usize, usize)) -> Result<ValuePtr> {
         let metas = self.metas.borrow();
         match metas.get(var.0) {
             Some(MetaEntry::Solved { val, .. }) => Ok(val.clone()),
-            Some(MetaEntry::Unsolved { .. }) => Ok(with_span(Value::meta(var), start, end)),
-            None => Err(Error::internal("invalid meta variable".to_string())),
+            Some(MetaEntry::Unsolved { .. }) => Ok(with_span(Value::meta(var), span)),
+            None => Err(Error::internal("invalid meta variable")),
         }
     }
     pub fn get_check_value(
         &self,
         env: &mut Environment,
         var: CheckVar,
-        start: usize,
-        end: usize,
+        span: (usize, usize),
     ) -> Result<ValuePtr> {
         let checks = self.checks.borrow();
         match checks.get(var.0) {
             Some(CheckEntry::Checked(term)) => env.evaluate(term.clone(), self),
-            Some(CheckEntry::Unchecked {
-                ctx,
-                term,
-                ty,
-                meta,
-            }) => env.app_pruning(self.get_meta_value(*meta, start, end)?, &ctx.pruning, self),
-            None => Err(Error::internal("invalid check variable".to_string())),
+            Some(CheckEntry::Unchecked { ctx, meta, .. }) => {
+                env.app_pruning(self.get_meta_value(*meta, span)?, &ctx.pruning, self)
+            }
+            None => Err(Error::internal("invalid check variable")),
         }
     }
     pub fn get_check<F, R>(&self, var: CheckVar) -> Result<CheckEntry> {
@@ -98,7 +94,7 @@ impl MetaContext {
         checks
             .get(var.0)
             .cloned()
-            .ok_or_else(|| Error::internal("invalid check variable".to_string()))
+            .ok_or_else(|| Error::internal("invalid check variable"))
     }
     pub fn modify_check<F>(&self, var: CheckVar, conti: F) -> Result<()>
     where
@@ -107,7 +103,7 @@ impl MetaContext {
         let mut checks = self.checks.borrow_mut();
         match checks.get_mut(var.0) {
             Some(entry) => conti(entry),
-            None => Err(Error::internal("invalid check variable".to_string())),
+            None => Err(Error::internal("invalid check variable")),
         }
     }
     pub fn new_meta(&self, ty: ValuePtr) -> MetaVar {
