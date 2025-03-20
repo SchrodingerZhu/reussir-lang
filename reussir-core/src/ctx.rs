@@ -1,5 +1,4 @@
 use rpds::{HashTrieMap, Vector};
-use tracing::span;
 
 use crate::{
     Result,
@@ -31,6 +30,12 @@ impl Context {
             pruning: Pruning::new(),
             name_types: HashTrieMap::new(),
         }
+    }
+    pub fn env_mut(&mut self) -> &mut Environment {
+        &mut self.env
+    }
+    pub fn env_mut_pruning(&mut self) -> (&mut Environment, &Pruning) {
+        (&mut self.env, &self.pruning)
     }
     pub fn with_bind<F, R>(
         &mut self,

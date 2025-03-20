@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 
 use tinyset::SetUsize;
 
@@ -72,6 +71,12 @@ impl MetaContext {
         });
         var
     }
+    pub fn check_vars(&self) -> impl Iterator<Item = CheckVar> + use<> {
+        (0..self.checks.len()).map(CheckVar)
+    }
+    pub fn num_checks(&self) -> usize {
+        self.checks.len()
+    }
     pub fn get_meta_value(&self, var: MetaVar, span: (usize, usize)) -> Result<ValuePtr> {
         let metas = &self.metas;
         match metas.get(var.0) {
@@ -95,30 +100,27 @@ impl MetaContext {
             None => Err(Error::internal("invalid check variable")),
         }
     }
-    pub fn get_check<F, R>(&self, var: CheckVar) -> Result<CheckEntry> {
+    pub fn get_check(&self, var: CheckVar) -> Result<CheckEntry> {
         let checks = &self.checks;
         checks
             .get(var.0)
             .cloned()
             .ok_or_else(|| Error::internal("invalid check variable"))
     }
-    pub fn modify_check<F>(&mut self, var: CheckVar, conti: F) -> Result<()>
-    where
-        F: FnOnce(&mut CheckEntry) -> Result<()>,
-    {
+    pub fn set_check(&mut self, var: CheckVar, new_entry: CheckEntry) -> Result<()> {
         let checks = &mut self.checks;
         match checks.get_mut(var.0) {
-            Some(entry) => conti(entry),
+            Some(entry) => {
+                *entry = new_entry;
+                Ok(())
+            }
             None => Err(Error::internal("invalid check variable")),
         }
     }
-    pub fn new_meta(&mut self, ty: ValuePtr) -> MetaVar {
+    pub fn new_meta(&mut self, ty: ValuePtr, blocking: SetUsize) -> MetaVar {
         let metas = &mut self.metas;
         let var = MetaVar(metas.len());
-        metas.push(MetaEntry::Unsolved {
-            blocking: SetUsize::new(),
-            ty,
-        });
+        metas.push(MetaEntry::Unsolved { blocking, ty });
         var
     }
     pub fn set_meta(&mut self, var: MetaVar, new_entry: MetaEntry) -> Result<()> {
@@ -134,7 +136,7 @@ impl MetaContext {
     pub fn get_meta(&self, var: MetaVar) -> Result<&MetaEntry> {
         let metas = &self.metas;
         match metas.get(var.0) {
-            Some(entry) => Ok(&entry),
+            Some(entry) => Ok(entry),
             None => Err(Error::unresolved_meta(var)),
         }
     }
