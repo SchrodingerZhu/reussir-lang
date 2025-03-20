@@ -109,6 +109,10 @@ impl Environment {
             app_val(acc, var.clone(), *icit, meta, span)
         })
     }
+    pub fn normalize(&mut self, term: TermPtr, meta: &MetaContext) -> Result<TermPtr> {
+        let value = self.evaluate(term.clone(), meta)?;
+        quote(value.clone(), meta)
+    }
 }
 
 pub(crate) fn app_val(
