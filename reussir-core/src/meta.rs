@@ -3,11 +3,12 @@ use std::cell::RefCell;
 use tinyset::SetUsize;
 
 use crate::{
+    Error, Result,
     ctx::Context,
+    eval::Environment,
     term::TermPtr,
     utils::with_span,
     value::{Value, ValuePtr},
-    Error, Result,
 };
 
 #[repr(transparent)]
@@ -69,10 +70,27 @@ impl MetaContext {
         let metas = self.metas.borrow();
         match metas.get(var.0) {
             Some(MetaEntry::Solved { val, .. }) => Ok(val.clone()),
-            Some(MetaEntry::Unsolved { .. }) => {
-                Ok(with_span(Value::Flex(var, Default::default()), start, end))
-            }
+            Some(MetaEntry::Unsolved { .. }) => Ok(with_span(Value::meta(var), start, end)),
             None => Err(Error::internal("invalid meta variable".to_string())),
+        }
+    }
+    pub fn get_check_value(
+        &self,
+        env: &mut Environment,
+        var: CheckVar,
+        start: usize,
+        end: usize,
+    ) -> Result<ValuePtr> {
+        let checks = self.checks.borrow();
+        match checks.get(var.0) {
+            Some(CheckEntry::Checked(term)) => env.evaluate(term.clone(), self),
+            Some(CheckEntry::Unchecked {
+                ctx,
+                term,
+                ty,
+                meta,
+            }) => env.app_pruning(self.get_meta_value(*meta, start, end)?, &ctx.pruning, self),
+            None => Err(Error::internal("invalid check variable".to_string())),
         }
     }
     pub fn get_check<F, R>(&self, var: CheckVar) -> Result<CheckEntry> {

@@ -3,11 +3,11 @@ use rpds::HashTrieMap;
 use rustc_hash::FxRandomState;
 
 use crate::{
+    Error, Result,
     meta::MetaContext,
     term::TermPtr,
-    utils::{with_span, Icit, Spine, UniqueName},
+    utils::{Icit, Pruning, Spine, UniqueName, with_span},
     value::{Value, ValuePtr},
-    Error, Result,
 };
 
 #[derive(Clone)]
@@ -52,6 +52,19 @@ impl Environment {
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         todo!()
     }
+    pub fn app_pruning(
+        &self,
+        value: ValuePtr,
+        pruning: &Pruning,
+        meta: &MetaContext,
+    ) -> Result<ValuePtr> {
+        pruning.iter().try_fold(value, |acc, (name, icit)| {
+            let var = self.0.get(name).ok_or_else(|| {
+                Error::internal(format!("Variable {:?} not found in environment", name))
+            })?;
+            app_val(acc, var.clone(), *icit, meta)
+        })
+    }
 }
 
 fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Result<ValuePtr> {
@@ -60,7 +73,7 @@ fn app_val(lhs: ValuePtr, rhs: ValuePtr, icit: Icit, meta: &MetaContext) -> Resu
     match lhs.data() {
         Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
         Value::Flex(meta, spine) => Ok(with_span(
-            Value::Flex(meta.clone(), spine.push_back((rhs, icit))),
+            Value::Flex(*meta, spine.push_back((rhs, icit))),
             span_min,
             span_max,
         )),

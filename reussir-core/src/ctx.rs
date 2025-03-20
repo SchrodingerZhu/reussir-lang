@@ -11,7 +11,7 @@ use crate::{
 pub struct Context {
     env: Environment,
     locals: Vector<(UniqueName, VarKind)>,
-    pruning: Pruning,
+    pub(crate) pruning: Pruning,
     name_types: HashTrieMap<UniqueName, ValuePtr>,
 }
 
