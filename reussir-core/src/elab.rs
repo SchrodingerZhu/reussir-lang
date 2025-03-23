@@ -418,8 +418,23 @@ impl PartialRenaming {
                 error!("failed to evaluate pruned type: {e}");
             })
             .ok()?;
+        let span = pruned_ty.span;
+        let ty = ty.clone();
         let new_meta = mctx.new_meta(pruned_ty, blocking.clone());
-        todo!("prune_meta")
+        let solution_body = with_span(
+            Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.clone()),
+            Span::default(),
+        );
+        let solution_lvl = DBLvl(pruning.len());
+        let solution_lambda = stack_lambdas(solution_lvl, ty.clone(), solution_body, mctx)?;
+        let solution = Environment::new()
+            .evaluate(solution_lambda, mctx)
+            .inspect_err(|e| {
+                error!("failed to evaluate solution: {e}");
+            })
+            .ok()?;
+        mctx.set_meta(meta, MetaEntry::Solved { val: solution, ty });
+        Some(new_meta)
     }
 }
 
