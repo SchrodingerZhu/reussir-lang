@@ -1,19 +1,24 @@
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use thiserror::Error;
 use tracing::{error, trace};
+use ustr::Ustr;
 
 use crate::{
     ctx::Context,
     eval::{quote, Environment},
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
-    utils::{with_span, DBLvl, Icit, Name, Pruning, Span, Spine},
+    utils::{with_span, DBLvl, Icit, Name, Pruning, Span, Spine, WithSpan},
     value::{self, Value, ValuePtr},
     Result,
 };
 
-use std::collections::hash_map::Entry as HMapEntry;
 use std::collections::hash_set::Entry as HSetEntry;
+use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
+
+thread_local! {
+    static TERM_PLACEHOLDER: TermPtr = with_span(Term::Hole, Span::default());
+}
 
 #[derive(Debug, Clone, Copy, Error)]
 pub enum Error {
@@ -365,7 +370,8 @@ impl PartialRenaming {
         mctx: &MetaContext,
     ) -> Option<TermPtr> {
         let mut renaming = PartialRenaming::default();
-        let mut wrappers = Vec::new();
+        let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
+        let mut cursor = &mut result;
         loop {
             ty = mctx
                 .force(ty)
@@ -379,7 +385,12 @@ impl PartialRenaming {
             let var = with_span(Value::var(renaming.cod), x.span);
             if mask.is_none() {
                 let arg_ty = renaming.rename(arg_ty.clone(), mctx)?;
-                wrappers.push((x.clone(), *icit, arg_ty));
+                let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
+                *cursor = with_span(Term::Pi(x.clone(), *icit, arg_ty, hole), ty.span);
+                let Term::Pi(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
+                    unreachable!("expected pi type");
+                };
+                cursor = body;
                 renaming.lift_inplace();
             } else {
                 renaming.skip();
@@ -391,12 +402,68 @@ impl PartialRenaming {
                 })
                 .ok()?;
         }
-        Some(wrappers.into_iter().rev().fold(
-            renaming.rename(ty, mctx)?,
-            |acc, (x, icit, arg_ty)| {
-                let span = acc.span;
-                with_span(Term::Pi(x, icit, arg_ty, acc), span)
-            },
-        ))
+        *cursor = renaming.rename(ty, mctx)?;
+        Some(result)
     }
+
+    fn prune_meta(pruning: &Pruning, meta: MetaVar, mctx: &mut MetaContext) -> Option<MetaVar> {
+        let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta) else {
+            error!("prune_meta applied to solved meta");
+            return None;
+        };
+        let pruned_ty = Self::prune_type(pruning.iter().rev(), ty.clone(), mctx)?;
+        let pruned_ty = Environment::new()
+            .evaluate(pruned_ty, mctx)
+            .inspect_err(|e| {
+                error!("failed to evaluate pruned type: {e}");
+            })
+            .ok()?;
+        let new_meta = mctx.new_meta(pruned_ty, blocking.clone());
+        todo!("prune_meta")
+    }
+}
+
+fn stack_lambdas(
+    level: DBLvl,
+    mut ty: ValuePtr,
+    term: TermPtr,
+    mctx: &MetaContext,
+) -> Option<TermPtr> {
+    let mut current = DBLvl::zero();
+    let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
+    let mut cursor = &mut result;
+    while current != level {
+        current = current.next();
+        ty = mctx
+            .force(ty.clone())
+            .inspect_err(|e| error!("failed to force type: {e}"))
+            .ok()?;
+        if let Value::Pi(x, icit, _, closure) = ty.data() {
+            let x = if x.is_anon() {
+                WithSpan::new(Ustr::from(&format!("α{}", current.0)), x.span)
+            } else {
+                x.clone()
+            };
+            let var = with_span(Value::var(current), x.span);
+            let icit = *icit;
+            ty = closure
+                .apply(var, mctx)
+                .inspect_err(|e| {
+                    trace!("failed to apply closure: {e}");
+                })
+                .ok()?;
+            let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
+            *cursor = with_span(Term::Lambda(x, icit, hole), term.span);
+            let Term::Lambda(_, _, body) = Rc::make_mut(cursor).data_mut() else {
+                unreachable!("expected lambda type");
+            };
+            cursor = body;
+        } else {
+            error!("stack_lambdas applied to non-pi type");
+            return None;
+        }
+        current = current.next();
+    }
+    *cursor = term;
+    Some(result)
 }

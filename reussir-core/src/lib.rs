@@ -1,5 +1,6 @@
 #![feature(new_range_api)]
 #![feature(hash_set_entry)]
+#![feature(unique_rc_arc)]
 use term::TermPtr;
 use thiserror::Error;
 

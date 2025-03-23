@@ -1,4 +1,8 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc};
+use std::{
+    cell::RefCell,
+    ops::Deref,
+    rc::{Rc, UniqueRc},
+};
 
 use rpds::Vector;
 use ustr::Ustr;
@@ -39,6 +43,12 @@ impl<T> Deref for WithSpan<T> {
 impl<T> WithSpan<T> {
     pub fn data(&self) -> &T {
         &self.data
+    }
+    pub fn data_mut(&mut self) -> &mut T {
+        &mut self.data
+    }
+    pub fn new(data: T, span: Span) -> Self {
+        Self { data, span }
     }
 }
 
@@ -94,6 +104,12 @@ pub type Spine = Vector<(ValuePtr, Icit)>;
 pub type Name = WithSpan<Ustr>;
 pub type Span = std::range::Range<usize>;
 
+impl Name {
+    pub fn is_anon(&self) -> bool {
+        self.data().is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Closure {
     env: RefCell<Environment>,
@@ -109,6 +125,10 @@ pub fn empty_spine() -> Spine {
 
 pub fn with_span<T>(data: T, span: Span) -> Rc<WithSpan<T>> {
     Rc::new(WithSpan { data, span })
+}
+
+pub fn with_span_unique<T>(data: T, span: Span) -> UniqueRc<WithSpan<T>> {
+    UniqueRc::new(WithSpan { data, span })
 }
 
 pub fn with_span_as<T, X, Y>(data: T, target: X) -> Rc<WithSpan<T>>
