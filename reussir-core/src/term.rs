@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::{
     meta::{CheckVar, MetaVar},
-    utils::{Icit, Pruning, UniqueName, WithSpan},
+    utils::{DBIdx, Icit, Name, Pruning, WithSpan},
 };
 
 pub type TermPtr = Rc<WithSpan<Term>>;
@@ -10,14 +10,15 @@ pub type TermPtr = Rc<WithSpan<Term>>;
 #[derive(Debug, Clone)]
 pub enum Term {
     Hole,
-    Var(UniqueName),
-    Lambda(UniqueName, Icit, TermPtr),
+    Var(DBIdx),
+    Lambda(Name, Icit, TermPtr),
     App(TermPtr, TermPtr, Icit),
+    NamedApp(TermPtr, TermPtr, Name),
     AppPruning(TermPtr, Pruning),
     Universe,
-    Pi(UniqueName, Icit, TermPtr, TermPtr),
+    Pi(Name, Icit, TermPtr, TermPtr),
     Let {
-        name: UniqueName,
+        name: Name,
         ty: TermPtr,
         term: TermPtr,
         body: TermPtr,

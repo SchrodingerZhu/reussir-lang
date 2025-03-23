@@ -1,19 +1,20 @@
 use rpds::{HashTrieMap, Vector};
 
 use crate::{
-    Result,
-    eval::{Environment, quote},
+    eval::{quote, Environment},
     meta::MetaContext,
     term::{Term, TermPtr},
-    utils::{Icit, Pruning, UniqueName, with_span},
+    utils::{with_span, DBLvl, Icit, Name, Pruning, Span},
     value::{Value, ValuePtr},
+    Result,
 };
 #[derive(Debug, Clone)]
 pub struct Context {
     env: Environment,
-    locals: Vector<(UniqueName, VarKind)>,
+    pub(crate) level: DBLvl,
+    locals: Vector<(Name, VarKind)>,
     pub(crate) pruning: Pruning,
-    name_types: HashTrieMap<UniqueName, ValuePtr>,
+    name_types: HashTrieMap<Name, (DBLvl, ValuePtr)>,
 }
 
 impl Default for Context {
@@ -28,6 +29,7 @@ impl Context {
             env: Environment::new(),
             locals: Vector::new(),
             pruning: Pruning::new(),
+            level: DBLvl(0),
             name_types: HashTrieMap::new(),
         }
     }
@@ -40,49 +42,59 @@ impl Context {
     pub fn with_bind<F, R>(
         &mut self,
         meta: &MetaContext,
-        name: UniqueName,
+        name: Name,
         ty: ValuePtr,
         f: F,
     ) -> Result<R>
     where
         F: FnOnce(&mut Self) -> Result<R>,
     {
-        self.name_types.insert_mut(name.clone(), ty.clone());
-        let res = self.with_binder(meta, name.clone(), ty, f);
-        self.name_types.remove_mut(&name);
+        let old;
+        if let Some(entry) = self.name_types.get_mut(&name) {
+            old = Some(entry.clone());
+            *entry = (self.level, ty.clone());
+        } else {
+            old = None;
+            self.name_types.insert_mut(name, (self.level, ty.clone()));
+        }
+        let res = self.with_binder(meta, name, ty, f);
+        if let Some(old) = old {
+            self.name_types.insert_mut(name, old);
+        } else {
+            self.name_types.remove_mut(&name);
+        }
         res
     }
     pub fn with_binder<F, R>(
         &mut self,
         meta: &MetaContext,
-        name: UniqueName,
+        name: Name,
         ty: ValuePtr,
         f: F,
     ) -> Result<R>
     where
         F: FnOnce(&mut Self) -> Result<R>,
     {
-        let var = with_span(Value::var(name.clone()), name.span());
-        self.env.insert_mut(name.clone(), var.clone());
-        let ty = match quote(ty, meta) {
+        let var = with_span(Value::var(self.level), name.span);
+        self.env.push_back_mut(var.clone());
+        let ty = match quote(self.level, ty, meta) {
             Ok(ty) => ty,
             Err(e) => {
-                self.env.remove_mut(&name);
+                self.env.pop_back_mut();
                 return Err(e);
             }
         };
-        self.locals
-            .push_back_mut((name.clone(), VarKind::Bound { ty }));
-        self.pruning.push_back_mut((name.clone(), Icit::Expl));
+        self.locals.push_back_mut((name, VarKind::Bound { ty }));
+        self.pruning.push_back_mut(Some(Icit::Expl));
         let res = f(self);
         self.pruning.drop_last_mut();
         self.locals.drop_last_mut();
-        self.env.remove_mut(&name);
+        self.env.pop_back_mut();
         res
     }
     pub fn with_def<F, R>(
         &mut self,
-        name: UniqueName,
+        name: Name,
         term: TermPtr,
         value: ValuePtr,
         ty: TermPtr,
@@ -92,31 +104,40 @@ impl Context {
     where
         F: FnOnce(&mut Self) -> R,
     {
-        self.env.insert_mut(name.clone(), value);
+        let old;
+        self.env.push_back_mut(value);
         self.locals.push_back_mut((
-            name.clone(),
+            name,
             VarKind::Defined {
                 term: term.clone(),
                 ty: ty.clone(),
             },
         ));
-        self.name_types.insert_mut(name.clone(), vty);
+        if let Some(entry) = self.name_types.get_mut(&name) {
+            old = Some(entry.clone());
+            *entry = (self.level, vty.clone());
+        } else {
+            old = None;
+            self.name_types.insert_mut(name, (self.level, vty.clone()));
+        }
         let res = f(self);
-        self.name_types.remove_mut(&name);
+        if let Some(old) = old {
+            self.name_types.insert_mut(name, old);
+        } else {
+            self.name_types.remove_mut(&name);
+        }
         self.locals.drop_last_mut();
-        self.env.remove_mut(&name);
+        self.env.pop_back_mut();
         res
     }
-    pub fn close_term(&self, term: TermPtr, span: (usize, usize)) -> TermPtr {
+    pub fn close_term(&self, term: TermPtr, span: Span) -> TermPtr {
         self.locals
             .iter()
             .fold(term, |body, (name, kind)| match kind {
-                VarKind::Bound { .. } => {
-                    with_span(Term::Lambda(name.clone(), Icit::Expl, body), span)
-                }
+                VarKind::Bound { .. } => with_span(Term::Lambda(*name, Icit::Expl, body), span),
                 VarKind::Defined { term, ty } => with_span(
                     Term::Let {
-                        name: name.clone(),
+                        name: *name,
                         ty: ty.clone(),
                         term: term.clone(),
                         body,
@@ -125,16 +146,16 @@ impl Context {
                 ),
             })
     }
-    pub fn close_type(&self, ty: TermPtr, span: (usize, usize)) -> TermPtr {
+    pub fn close_type(&self, ty: TermPtr, span: Span) -> TermPtr {
         self.locals
             .iter()
             .fold(ty, |body, (name, kind)| match kind {
                 VarKind::Bound { ty } => {
-                    with_span(Term::Pi(name.clone(), Icit::Expl, ty.clone(), body), span)
+                    with_span(Term::Pi(*name, Icit::Expl, ty.clone(), body), span)
                 }
                 VarKind::Defined { ty, term } => with_span(
                     Term::Let {
-                        name: name.clone(),
+                        name: *name,
                         ty: ty.clone(),
                         term: term.clone(),
                         body,

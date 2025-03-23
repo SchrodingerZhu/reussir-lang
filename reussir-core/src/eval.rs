@@ -1,23 +1,14 @@
-use archery::RcK;
-use rpds::HashTrieMap;
-use rustc_hash::FxRandomState;
+use rpds::Vector;
 
 use crate::{
-    Error, Result,
     meta::MetaContext,
     term::{Term, TermPtr},
-    utils::{Closure, Icit, Pruning, Spine, UniqueName, with_span, with_span_as},
-    value::{Value, ValuePtr},
+    utils::{with_span, with_span_as, Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine},
+    value::{Value, ValuePtr}, Result,
 };
 
-#[derive(Clone)]
-pub struct Environment(HashTrieMap<UniqueName, ValuePtr, RcK, FxRandomState>);
-
-impl std::fmt::Debug for Environment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_map().entries(self.0.iter()).finish()
-    }
-}
+#[derive(Clone, Debug)]
+pub struct Environment(Vector<ValuePtr>);
 
 impl Default for Environment {
     fn default() -> Self {
@@ -27,42 +18,42 @@ impl Default for Environment {
 
 impl Environment {
     pub fn new() -> Self {
-        Self(HashTrieMap::new_with_hasher_and_ptr_kind(
-            FxRandomState::default(),
-        ))
+        Self(Vector::new())
     }
-    pub fn with_var<F, R>(&mut self, name: UniqueName, value: ValuePtr, f: F) -> R
+    pub fn with_var<F, R>(&mut self, value: ValuePtr, f: F) -> R
     where
         F: FnOnce(&mut Environment) -> R,
     {
-        self.0.insert_mut(name.clone(), value.clone());
+        self.0.push_back_mut(value);
         let res = f(self);
-        self.0.remove_mut(&name);
+        self.0.drop_last_mut();
         res
     }
-    pub fn insert_mut(&mut self, name: UniqueName, value: ValuePtr) {
-        self.0.insert_mut(name, value);
+    pub fn push_back_mut(&mut self, value: ValuePtr) {
+        self.0.push_back_mut(value);
     }
-    pub fn remove_mut(&mut self, name: &UniqueName) {
-        self.0.remove_mut(name);
+    pub fn pop_back_mut(&mut self) {
+        self.0.drop_last_mut();
     }
-    pub fn insert(&self, name: UniqueName, value: ValuePtr) -> Self {
-        Self(self.0.insert(name, value))
+    pub fn push_back(&self, value: ValuePtr) -> Self {
+        Self(self.0.push_back(value))
     }
-    pub fn get_var(&self, name: &UniqueName) -> Result<ValuePtr> {
+    pub fn get_var(&self, idx: DBIdx) -> ValuePtr {
+        let level = idx.to_level(self.0.len());
         self.0
-            .get(name)
+            .get(level.0)
             .cloned()
-            .ok_or_else(|| Error::unresolved_variable(name.clone()))
+            .expect("Variable not found in environment")
     }
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         match term.data() {
-            crate::term::Term::Hole => Err(Error::internal("Cannot evaluate hole")),
-            crate::term::Term::Var(name) => self.get_var(name),
+            crate::term::Term::Hole => unreachable!("not possible to evaluate hole"),
+            crate::term::Term::NamedApp(..) => unreachable!("not possible to evaluate named app"),
+            crate::term::Term::Var(idx) => Ok(self.get_var(*idx)),
             crate::term::Term::Lambda(name, icit, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
                 Ok(with_span_as(
-                    Value::Lambda(name.clone(), *icit, closure),
+                    Value::Lambda(*name, *icit, closure),
                     term,
                 ))
             }
@@ -81,17 +72,15 @@ impl Environment {
                 let closure = Closure::new(self.clone(), body.clone());
                 let ty = self.evaluate(ty.clone(), meta)?;
                 Ok(with_span_as(
-                    Value::Pi(name.clone(), *icit, ty, closure),
+                    Value::Pi(*name, *icit, ty, closure),
                     term,
                 ))
             }
-            crate::term::Term::Let {
-                name, term, body, ..
-            } => {
+            crate::term::Term::Let { term, body, .. } => {
                 let term = self.evaluate(term.clone(), meta)?;
-                self.with_var(name.clone(), term, |env| env.evaluate(body.clone(), meta))
+                self.with_var(term, |env| env.evaluate(body.clone(), meta))
             }
-            crate::term::Term::Meta(m) => meta.get_meta_value(*m, term.span),
+            crate::term::Term::Meta(m) => Ok(meta.get_meta_value(*m, term.span)),
             crate::term::Term::Postponed(c) => meta.get_check_value(self, *c, term.span),
         }
     }
@@ -100,18 +89,22 @@ impl Environment {
         value: ValuePtr,
         pruning: &Pruning,
         meta: &MetaContext,
-        span: (usize, usize),
+        span: Span,
     ) -> Result<ValuePtr> {
-        pruning.iter().try_fold(value, |acc, (name, icit)| {
-            let var = self.0.get(name).ok_or_else(|| {
-                Error::internal(format!("Variable {:?} not found in environment", name))
-            })?;
-            app_val(acc, var.clone(), *icit, meta, span)
-        })
+        assert_eq!(self.0.len(), pruning.len(), "pruning length mismatch");
+        pruning
+            .iter()
+            .rev()
+            .copied()
+            .zip(self.0.iter().rev().cloned())
+            .filter_map(|(a, b)| a.map(|i| (i, b)))
+            .try_fold(value, |acc, (icit, value)| {
+                app_val(acc, value, icit, meta, span)
+            })
     }
     pub fn normalize(&mut self, term: TermPtr, meta: &MetaContext) -> Result<TermPtr> {
         let value = self.evaluate(term.clone(), meta)?;
-        quote(value.clone(), meta)
+        quote(DBLvl(self.0.len()), value.clone(), meta)
     }
 }
 
@@ -120,22 +113,19 @@ pub(crate) fn app_val(
     rhs: ValuePtr,
     icit: Icit,
     meta: &MetaContext,
-    span: (usize, usize),
+    span: Span,
 ) -> Result<ValuePtr> {
     match lhs.data() {
-        Value::Lambda(name, _, closure) => closure.apply(name.clone(), rhs, meta),
+        Value::Lambda(_, _, closure) => closure.apply(rhs, meta),
         Value::Flex(meta, spine) => Ok(with_span(
             Value::Flex(*meta, spine.push_back((rhs, icit))),
             span,
         )),
         Value::Rigid(name, spine) => Ok(with_span(
-            Value::Rigid(name.clone(), spine.push_back((rhs, icit))),
+            Value::Rigid(*name, spine.push_back((rhs, icit))),
             span,
         )),
-        _ => Err(Error::internal(format!(
-            "Cannot apply {:?} to {:?}",
-            lhs, rhs
-        ))),
+        _ => unreachable!("lhs is not applicable"),
     }
 }
 
@@ -143,7 +133,7 @@ pub(crate) fn app_spine(
     value: ValuePtr,
     spine: &Spine,
     meta: &MetaContext,
-    span: (usize, usize),
+    span: Span,
 ) -> Result<ValuePtr> {
     spine.iter().cloned().try_fold(value, |acc, (arg, icit)| {
         app_val(acc, arg, icit, meta, span)
@@ -151,45 +141,53 @@ pub(crate) fn app_spine(
 }
 
 fn quote_spine(
+    level: DBLvl,
     term: TermPtr,
     spine: &Spine,
     mctx: &MetaContext,
-    span: (usize, usize),
+    span: Span,
 ) -> Result<TermPtr> {
     spine.iter().try_fold(term, |acc, (arg, icit)| {
-        let arg = quote(arg.clone(), mctx)?;
+        let arg = quote(level, arg.clone(), mctx)?;
         Ok(with_span(Term::App(acc, arg, *icit), span))
     })
 }
 
-pub fn quote(value: ValuePtr, mctx: &MetaContext) -> Result<TermPtr> {
+pub fn quote(level: DBLvl, value: ValuePtr, mctx: &MetaContext) -> Result<TermPtr> {
     match value.data() {
         Value::Flex(meta, spine) => quote_spine(
+            level,
             with_span(Term::Meta(*meta), value.span),
             spine,
             mctx,
             value.span,
         ),
         Value::Rigid(var, spine) => quote_spine(
-            with_span(Term::Var(var.clone()), value.span),
+            level,
+            with_span(Term::Var(var.to_index(level)), value.span),
             spine,
             mctx,
             value.span,
         ),
         Value::Lambda(name, icit, closure) => {
-            let arg = with_span(Value::var(name.clone()), name.span());
-            let body = closure.apply(name.clone(), arg, mctx)?;
+            let arg = with_span(Value::var(level), name.span);
+            let body = closure.apply(arg, mctx)?;
             Ok(with_span_as(
-                Term::Lambda(name.clone(), *icit, quote(body, mctx)?),
+                Term::Lambda(*name, *icit, quote(level.next(), body, mctx)?),
                 value,
             ))
         }
         Value::Pi(name, icit, arg_ty, closure) => {
-            let arg_ty = quote(arg_ty.clone(), mctx)?;
-            let arg = with_span(Value::var(name.clone()), name.span());
-            let body = closure.apply(name.clone(), arg, mctx)?;
+            let arg_ty = quote(level, arg_ty.clone(), mctx)?;
+            let arg = with_span(Value::var(level), name.span);
+            let body = closure.apply(arg, mctx)?;
             Ok(with_span_as(
-                Term::Pi(name.clone(), *icit, arg_ty, quote(body, mctx)?),
+                Term::Pi(
+                    *name,
+                    *icit,
+                    arg_ty,
+                    quote(level.next(), body, mctx)?,
+                ),
                 value,
             ))
         }

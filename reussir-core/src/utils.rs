@@ -1,13 +1,14 @@
-use std::{cell::RefCell, fmt::Display, ops::Deref, rc::Rc};
+use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use rpds::Vector;
+use ustr::Ustr;
 
-use crate::{Result, eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
+use crate::{eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr, Result};
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {
     data: T,
-    pub span: (usize, usize),
+    pub span: Span,
 }
 
 impl<T: PartialEq> PartialEq for WithSpan<T> {
@@ -41,69 +42,39 @@ impl<T> WithSpan<T> {
     }
 }
 
-#[derive(Clone, Eq)]
 #[repr(transparent)]
-pub struct UniqueName(Rc<WithSpan<ustr::Ustr>>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DBIdx(pub(crate) usize);
 
-impl Display for UniqueName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name().fmt(f)
+impl DBIdx {
+    pub fn zero() -> Self {
+        Self(0)
+    }
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+    pub fn to_level(self, env_len: usize) -> DBLvl {
+        DBLvl(env_len - self.0 - 1)
     }
 }
 
-impl UniqueName {
-    pub fn new<T: Into<ustr::Ustr>>(name: T, span: (usize, usize)) -> Self {
-        Self(Rc::new(WithSpan {
-            data: name.into(),
-            span,
-        }))
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct DBLvl(pub(crate) usize);
+
+impl DBLvl {
+    pub fn zero() -> Self {
+        Self(0)
     }
-    pub fn fresh(span: (usize, usize)) -> Self {
-        Self(Rc::new(WithSpan {
-            data: "$x".into(),
-            span,
-        }))
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
     }
-    pub fn refresh(&self) -> Self {
-        Self(Rc::new(*self.0))
-    }
-    pub fn fresh_in<F>(&self, lookup: F) -> Self
-    where
-        F: FnOnce(&Self) -> bool,
-    {
-        if lookup(self) {
-            Self::fresh(self.0.span)
-        } else {
-            self.clone()
-        }
-    }
-    pub fn span(&self) -> (usize, usize) {
-        self.0.span
-    }
-    fn name(&self) -> ustr::Ustr {
-        self.0.data
+    pub fn to_index(self, level: Self) -> DBIdx {
+        DBIdx(level.0 - self.0 - 1)
     }
 }
 
-impl std::fmt::Debug for UniqueName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{:?}", **self.0, Rc::as_ptr(&self.0))
-    }
-}
-
-impl PartialEq for UniqueName {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl std::hash::Hash for UniqueName {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state);
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Icit {
     Expl,
     Impl,
@@ -118,8 +89,10 @@ impl std::fmt::Display for Icit {
     }
 }
 
-pub type Pruning = Vector<(UniqueName, Icit)>;
+pub type Pruning = Vector<Option<Icit>>;
 pub type Spine = Vector<(ValuePtr, Icit)>;
+pub type Name = WithSpan<Ustr>;
+pub type Span = std::range::Range<usize>;
 
 #[derive(Debug, Clone)]
 pub struct Closure {
@@ -134,7 +107,7 @@ pub fn empty_spine() -> Spine {
     EMPTY_SPINE.with(|spine| spine.clone())
 }
 
-pub fn with_span<T>(data: T, span: (usize, usize)) -> Rc<WithSpan<T>> {
+pub fn with_span<T>(data: T, span: Span) -> Rc<WithSpan<T>> {
     Rc::new(WithSpan { data, span })
 }
 
@@ -153,8 +126,8 @@ impl Closure {
         let env = RefCell::new(env);
         Self { env, body }
     }
-    pub fn apply(&self, name: UniqueName, arg: ValuePtr, meta: &MetaContext) -> Result<ValuePtr> {
+    pub fn apply(&self, arg: ValuePtr, meta: &MetaContext) -> Result<ValuePtr> {
         let mut env = self.env.borrow_mut();
-        env.with_var(name, arg, |env| env.evaluate(self.body.clone(), meta))
+        env.with_var(arg, |env| env.evaluate(self.body.clone(), meta))
     }
 }

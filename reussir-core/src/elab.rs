@@ -3,14 +3,17 @@ use thiserror::Error;
 use tracing::{error, trace};
 
 use crate::{
-    Result,
     ctx::Context,
-    eval::{Environment, quote},
+    eval::{quote, Environment},
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
-    utils::{Icit, Pruning, Spine, UniqueName, with_span},
-    value::{Value, ValuePtr},
+    utils::{with_span, DBLvl, Icit, Name, Pruning, Span, Spine},
+    value::{self, Value, ValuePtr},
+    Result,
 };
+
+use std::collections::hash_map::Entry as HMapEntry;
+use std::collections::hash_set::Entry as HSetEntry;
 
 #[derive(Debug, Clone, Copy, Error)]
 pub enum Error {
@@ -20,8 +23,6 @@ pub enum Error {
     LambdaBinderType,
     #[error("failed to elaborate terms into same types")]
     Placeholder,
-    #[error("unsupported unification patterns")]
-    UnsupportedUnification,
 }
 
 pub struct Elaborator {
@@ -53,11 +54,12 @@ impl Elaborator {
     }
 
     fn unify_placeholder(&mut self, expected: TermPtr, mvar: MetaVar) -> Result<()> {
-        match self.meta.get_meta(mvar)? {
+        match self.meta.get_meta(mvar) {
             MetaEntry::Unsolved { ty, blocking } => {
                 trace!(
                     "unifying unconstrained meta {:?} with placeholder {:?}",
-                    mvar, expected
+                    mvar,
+                    expected
                 );
                 let span = expected.span;
                 let solution = self.ctx.close_term(expected, span);
@@ -65,15 +67,16 @@ impl Elaborator {
                 let ty = ty.clone();
                 let blocking = blocking.clone();
                 self.meta
-                    .set_meta(mvar, MetaEntry::Solved { val: solution, ty })?;
-                for i in blocking.iter().map(CheckVar) {
+                    .set_meta(mvar, MetaEntry::Solved { val: solution, ty });
+                for i in blocking.iter().cloned() {
                     self.retry_check(i)?;
                 }
             }
             MetaEntry::Solved { val, .. } => {
                 trace!(
                     "unifying solved meta {:?} with placeholder {:?}",
-                    mvar, expected
+                    mvar,
+                    expected
                 );
                 let lhs = self.ctx.env_mut().evaluate(expected, &self.meta)?;
                 let (env, pruning) = self.ctx.env_mut_pruning();
@@ -91,18 +94,18 @@ impl Elaborator {
             term,
             ty,
             meta,
-        } = self.meta.get_check(var)?
+        } = self.meta.get_check(var).clone()
         {
-            let ty = self.meta.force(ty)?;
+            let ty = self.meta.force(ty.clone())?;
             if let Value::Flex(m, _) = ty.data() {
                 trace!("delayed check {var:?} is still blocked by meta {m:?}");
-                self.meta.add_blocker(var, *m)?;
+                self.meta.add_blocker(var, *m);
             } else {
                 trace!("delayed check {var:?} is no longer blocked");
                 self.with_context(ctx, |this| {
                     let term = this.check(term, ty)?;
                     this.unify_placeholder(term.clone(), meta)?;
-                    this.meta.set_check(var, CheckEntry::Checked(term))?;
+                    this.meta.set_check(var, CheckEntry::Checked(term));
                     Ok(())
                 })?;
             }
@@ -120,23 +123,24 @@ impl Elaborator {
                 term,
                 ty: expected,
                 meta,
-            } = self.meta.get_check(var)?
+            } = self.meta.get_check(var).clone()
             else {
                 continue;
             };
-            self.with_context(ctx, |this| {
-                let inferred = this.infer(term.clone())?;
+            self.with_context(ctx.clone(), |this| {
+                let inferred = this.infer(term)?;
                 let (term, ty) = this.apply_implicit_if_neutral(inferred)?;
-                this.meta
-                    .set_check(var, CheckEntry::Checked(term.clone()))?;
+                this.meta.set_check(var, CheckEntry::Checked(term.clone()));
                 this.unify(expected, ty, Error::ExpectedInferredMismatch)?;
                 this.unify_placeholder(term, meta)
             })?;
         }
         Ok(())
     }
-    fn evaluated_close_type(&self, value: ValuePtr, span: (usize, usize)) -> Result<ValuePtr> {
-        let term = self.ctx.close_type(quote(value, &self.meta)?, span);
+    fn evaluated_close_type(&self, value: ValuePtr, span: Span) -> Result<ValuePtr> {
+        let term = self
+            .ctx
+            .close_type(quote(self.ctx.level, value, &self.meta)?, span);
         Environment::new().evaluate(term, &self.meta)
     }
     fn fresh_meta(&mut self, ty: ValuePtr) -> Result<TermPtr> {
@@ -155,12 +159,12 @@ impl Elaborator {
         loop {
             ty = self.meta.force(ty)?;
             match ty.data() {
-                Value::Pi(name, Icit::Impl, arg_ty, body) => {
+                Value::Pi(_, Icit::Impl, arg_ty, body) => {
                     let meta = self.fresh_meta(arg_ty.clone())?;
                     let value = self.ctx.env_mut().evaluate(meta.clone(), &self.meta)?;
                     let span = term.span;
                     term = with_span(Term::App(term, meta, Icit::Impl), span);
-                    ty = body.apply(name.clone(), value, &self.meta)?;
+                    ty = body.apply(value, &self.meta)?;
                     continue;
                 }
                 _ => return Ok((term, ty)),
@@ -183,8 +187,8 @@ impl Elaborator {
     pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
         self.unify_impl(lhs.clone(), rhs.clone())
             .ok_or_else(|| {
-                let lhs = quote(lhs, &self.meta)?;
-                let rhs = quote(rhs, &self.meta)?;
+                let lhs = quote(self.ctx.level, lhs, &self.meta)?;
+                let rhs = quote(self.ctx.level, rhs, &self.meta)?;
                 Ok(crate::Error::UnificationFailure(lhs, rhs, err))
             })
             .map_err(|e| match e {
@@ -200,64 +204,199 @@ impl Elaborator {
     }
 }
 
+#[derive(Default)]
 struct PartialRenaming {
-    map: FxHashMapRand<UniqueName, UniqueName>,
-    inversion: Vec<(UniqueName, Icit)>,
+    dom: DBLvl,
+    cod: DBLvl,
+    rename: FxHashMapRand<DBLvl, DBLvl>,
     occ: Option<MetaVar>,
 }
 
 impl PartialRenaming {
-    fn locally<F, R>(&mut self, name: UniqueName, f: F) -> R
+    fn lift<F, R>(&mut self, f: F) -> R
     where
-        F: for<'a> FnOnce(&'a mut Self, UniqueName) -> R,
+        F: FnOnce(&mut Self) -> R,
     {
-        let fresh = name.refresh();
-        self.map.insert(name.clone(), fresh.clone());
-        let res = f(self, fresh);
-        self.map.remove(&name);
+        self.lift_inplace();
+        let res = f(self);
+        self.dom.0 -= 1;
+        self.cod.0 -= 1;
+        self.rename.remove(&self.cod);
         res
     }
-    fn invert(spine: &Spine, meta: &MetaContext) -> Option<(Self, Option<Pruning>)> {
-        let mut map = FxHashMapRand::default();
+    fn lift_inplace(&mut self) {
+        self.dom.0 += 1;
+        self.cod.0 += 1;
+        self.rename.insert(self.cod, self.dom);
+    }
+    fn skip(&mut self) {
+        self.cod.0 += 1;
+    }
+    fn invert(gamma: DBLvl, spine: &Spine, mctx: &MetaContext) -> Option<(Self, Option<Pruning>)> {
+        let mut rename = FxHashMapRand::default();
         let mut nonlinear = FxHashSetRand::default();
-        let mut inversion = Vec::new();
-        for (val, icit) in spine.iter().cloned() {
-            let val = meta
-                .force(val)
-                .inspect_err(|e| {
-                    error!("failed force evaluation on meta variable during unification {e}");
-                })
+        let mut dom = DBLvl::zero();
+        let mut new_spine = Vec::with_capacity(spine.len());
+        for (val, icit) in spine.iter() {
+            let val = mctx
+                .force(val.clone())
+                .inspect_err(|e| error!("failed to force spine value: {e}"))
                 .ok()?;
-            let Value::Rigid(x, i) = val.data() else {
-                trace!("unification failed with non-variable pattern");
-                return None;
-            };
-            if map.contains_key(x) || nonlinear.contains(x) {
-                map.remove(x);
-                nonlinear.insert(x.clone());
-            } else {
-                map.insert(x.clone(), x.refresh());
+            match val.data() {
+                Value::Rigid(level, s) if s.is_empty() => {
+                    let rename_entry = rename.entry(*level);
+                    let nonlinear_entry = nonlinear.entry(*level);
+                    if let HMapEntry::Occupied(x) = rename_entry {
+                        x.remove();
+                        nonlinear_entry.insert();
+                    } else if matches!(nonlinear_entry, HSetEntry::Vacant(_)) {
+                        rename_entry.insert_entry(dom);
+                    }
+                    new_spine.push((*level, *icit));
+                }
+                _ => {
+                    trace!("invalid unification pattern");
+                    return None;
+                }
             }
-            inversion.push((x.clone(), icit));
+            dom = dom.next();
         }
         let pruning = if nonlinear.is_empty() {
             None
         } else {
             Some(
-                inversion
-                    .iter()
-                    .filter(|(x, _)| !nonlinear.contains(x))
-                    .cloned()
+                new_spine
+                    .into_iter()
+                    .map(|(level, icit)| {
+                        if nonlinear.contains(&level) {
+                            None
+                        } else {
+                            Some(icit)
+                        }
+                    })
                     .collect(),
             )
         };
         Some((
             Self {
-                map,
-                inversion,
                 occ: None,
+                dom,
+                cod: gamma,
+                rename,
             },
             pruning,
+        ))
+    }
+
+    fn rename(&mut self, value: ValuePtr, mctx: &MetaContext) -> Option<TermPtr> {
+        let value = mctx
+            .force(value)
+            .inspect_err(|e| error!("failed to force value: {e}"))
+            .ok()?;
+
+        match value.data() {
+            Value::Flex(m, sp) => match &self.occ {
+                Some(n) if m == n => {
+                    trace!("occurs check failed during renaming");
+                    None
+                }
+                _ => self.prune_flex(*m, sp, mctx),
+            },
+            Value::Rigid(x, sp) => {
+                if let Some(y) = self.rename.get(x) {
+                    let idx = y.to_index(self.dom);
+                    let var = with_span(Term::Var(idx), value.span);
+                    self.rename_spine(var, sp, mctx)
+                } else {
+                    trace!("encountered escaping rigid variable during renaming");
+                    return None;
+                }
+            }
+            Value::Lambda(x, icit, closure) => {
+                let var = with_span(Value::var(self.cod), x.span);
+                let body = closure
+                    .apply(var, mctx)
+                    .inspect_err(|e| {
+                        trace!("failed to apply closure: {e}");
+                    })
+                    .ok()?;
+                let body = self.lift(|this| this.rename(body, mctx))?;
+                Some(with_span(Term::Lambda(x.clone(), *icit, body), value.span))
+            }
+            Value::Pi(x, icit, arg_ty, closure) => {
+                let arg_ty = self.rename(arg_ty.clone(), mctx)?;
+                let var = with_span(Value::var(self.cod), x.span);
+                let body = closure
+                    .apply(var, mctx)
+                    .inspect_err(|e| {
+                        trace!("failed to apply closure: {e}");
+                    })
+                    .ok()?;
+                let body = self.lift(|this| this.rename(body, mctx))?;
+                Some(with_span(
+                    Term::Pi(x.clone(), *icit, arg_ty, body),
+                    value.span,
+                ))
+            }
+            Value::Universe => Some(with_span(Term::Universe, value.span)),
+        }
+    }
+
+    fn rename_spine(
+        &mut self,
+        term: TermPtr,
+        spine: &Spine,
+        mctx: &MetaContext,
+    ) -> Option<TermPtr> {
+        spine.iter().try_fold(term, |acc, (val, icit)| {
+            let rhs = self.rename(val.clone(), mctx)?;
+            let span = acc.span;
+            Some(with_span(Term::App(acc, rhs, *icit), span))
+        })
+    }
+
+    fn prune_flex(&mut self, meta: MetaVar, spine: &Spine, mctx: &MetaContext) -> Option<TermPtr> {
+        todo!("prune_flex")
+    }
+
+    fn prune_type<'a>(
+        mut pruning: impl Iterator<Item = &'a Option<Icit>>,
+        mut ty: ValuePtr,
+        mctx: &MetaContext,
+    ) -> Option<TermPtr> {
+        let mut renaming = PartialRenaming::default();
+        let mut wrappers = Vec::new();
+        loop {
+            ty = mctx
+                .force(ty)
+                .inspect_err(|e| error!("failed to force type: {e}"))
+                .ok()?;
+            let Some(mask) = pruning.next() else { break };
+            let Value::Pi(x, icit, arg_ty, closure) = ty.data() else {
+                error!("prune_type applied to non-pi type");
+                return None;
+            };
+            let var = with_span(Value::var(renaming.cod), x.span);
+            if mask.is_none() {
+                let arg_ty = renaming.rename(arg_ty.clone(), mctx)?;
+                wrappers.push((x.clone(), *icit, arg_ty));
+                renaming.lift_inplace();
+            } else {
+                renaming.skip();
+            }
+            ty = closure
+                .apply(var, mctx)
+                .inspect_err(|e| {
+                    trace!("failed to apply closure: {e}");
+                })
+                .ok()?;
+        }
+        Some(wrappers.into_iter().rev().fold(
+            renaming.rename(ty, mctx)?,
+            |acc, (x, icit, arg_ty)| {
+                let span = acc.span;
+                with_span(Term::Pi(x, icit, arg_ty, acc), span)
+            },
         ))
     }
 }

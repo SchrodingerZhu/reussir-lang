@@ -1,12 +1,14 @@
-use tinyset::SetUsize;
+use archery::RcK;
+use rpds::HashTrieSet;
+use rustc_hash::FxRandomState;
 
 use crate::{
-    Error, Result,
     ctx::Context,
-    eval::{Environment, app_spine},
+    eval::{app_spine, Environment},
     term::TermPtr,
-    utils::with_span,
+    utils::{with_span, Span},
     value::{Value, ValuePtr},
+    Result,
 };
 
 #[repr(transparent)]
@@ -28,13 +30,14 @@ pub enum CheckEntry {
     },
 }
 
-#[derive(Debug, Clone)]
+pub type BlockerSet = HashTrieSet<CheckVar, RcK, FxRandomState>;
+
+#[derive(Clone)]
 pub enum MetaEntry {
-    Unsolved { blocking: SetUsize, ty: ValuePtr },
+    Unsolved { blocking: BlockerSet, ty: ValuePtr },
     Solved { val: ValuePtr, ty: ValuePtr },
 }
 
-#[derive(Debug)]
 pub struct MetaContext {
     checks: Vec<CheckEntry>,
     metas: Vec<MetaEntry>,
@@ -76,90 +79,76 @@ impl MetaContext {
     pub fn num_checks(&self) -> usize {
         self.checks.len()
     }
-    pub fn get_meta_value(&self, var: MetaVar, span: (usize, usize)) -> Result<ValuePtr> {
+    pub fn get_meta_value(&self, var: MetaVar, span: Span) -> ValuePtr {
         let metas = &self.metas;
         match metas.get(var.0) {
-            Some(MetaEntry::Solved { val, .. }) => Ok(val.clone()),
-            Some(MetaEntry::Unsolved { .. }) => Ok(with_span(Value::meta(var), span)),
-            None => Err(Error::internal("invalid meta variable")),
+            Some(MetaEntry::Solved { val, .. }) => val.clone(),
+            Some(MetaEntry::Unsolved { .. }) => with_span(Value::meta(var), span),
+            None => unreachable!("invalid meta variable"),
         }
     }
     pub fn get_check_value(
         &self,
         env: &mut Environment,
         var: CheckVar,
-        span: (usize, usize),
+        span: Span,
     ) -> Result<ValuePtr> {
         let checks = &self.checks;
         match checks.get(var.0) {
             Some(CheckEntry::Checked(term)) => env.evaluate(term.clone(), self),
             Some(CheckEntry::Unchecked { ctx, meta, .. }) => {
-                env.app_pruning(self.get_meta_value(*meta, span)?, &ctx.pruning, self, span)
+                env.app_pruning(self.get_meta_value(*meta, span), &ctx.pruning, self, span)
             }
-            None => Err(Error::internal("invalid check variable")),
+            None => unreachable!("invalid check variable"),
         }
     }
-    pub fn get_check(&self, var: CheckVar) -> Result<CheckEntry> {
+    pub fn get_check(&self, var: CheckVar) -> &CheckEntry {
         let checks = &self.checks;
-        checks
-            .get(var.0)
-            .cloned()
-            .ok_or_else(|| Error::internal("invalid check variable"))
+        checks.get(var.0).expect("invalid check variable")
     }
-    pub fn set_check(&mut self, var: CheckVar, new_entry: CheckEntry) -> Result<()> {
+    pub fn set_check(&mut self, var: CheckVar, new_entry: CheckEntry) {
         let checks = &mut self.checks;
-        match checks.get_mut(var.0) {
-            Some(entry) => {
-                *entry = new_entry;
-                Ok(())
-            }
-            None => Err(Error::internal("invalid check variable")),
-        }
+        *checks.get_mut(var.0).expect("invalid check variable") = new_entry;
     }
-    pub fn new_meta(&mut self, ty: ValuePtr, blocking: SetUsize) -> MetaVar {
+    pub fn new_meta(&mut self, ty: ValuePtr, blocking: BlockerSet) -> MetaVar {
         let metas = &mut self.metas;
         let var = MetaVar(metas.len());
         metas.push(MetaEntry::Unsolved { blocking, ty });
         var
     }
-    pub fn set_meta(&mut self, var: MetaVar, new_entry: MetaEntry) -> Result<()> {
+    pub fn set_meta(&mut self, var: MetaVar, new_entry: MetaEntry) {
         let metas = &mut self.metas;
-        match metas.get_mut(var.0) {
-            Some(entry) => {
-                *entry = new_entry;
-                Ok(())
-            }
-            None => Err(Error::internal("invalid meta variable")),
-        }
+        *metas.get_mut(var.0).expect("invalid meta variable") = new_entry;
     }
-    pub fn get_meta(&self, var: MetaVar) -> Result<&MetaEntry> {
+    pub fn get_meta(&self, var: MetaVar) -> &MetaEntry {
         let metas = &self.metas;
-        match metas.get(var.0) {
-            Some(entry) => Ok(entry),
-            None => Err(Error::unresolved_meta(var)),
-        }
+        metas.get(var.0).expect("invalid meta variable")
     }
-    pub fn add_blocker(&mut self, chk: CheckVar, meta: MetaVar) -> Result<()> {
+    pub fn add_blocker(&mut self, chk: CheckVar, meta: MetaVar) {
         let metas = &mut self.metas;
         match metas.get_mut(meta.0) {
             Some(MetaEntry::Unsolved { blocking, .. }) => {
-                blocking.insert(chk.0);
-                Ok(())
+                blocking.insert_mut(chk);
             }
-            Some(MetaEntry::Solved { .. }) => Err(Error::internal("meta variable already solved")),
-            None => Err(Error::internal("invalid meta variable")),
+            Some(MetaEntry::Solved { .. }) => unreachable!("solved meta variable"),
+            None => unreachable!("invalid meta variable"),
         }
     }
-    pub fn force(&self, val: ValuePtr) -> Result<ValuePtr> {
-        match val.data() {
-            Value::Flex(m, sp) => match self.metas.get(m.0) {
-                Some(MetaEntry::Unsolved { .. }) => Ok(val),
-                Some(MetaEntry::Solved { val, .. }) => {
-                    self.force(app_spine(val.clone(), sp, self, val.span)?)
-                }
-                None => Err(Error::internal("invalid meta variable")),
-            },
-            _ => Ok(val),
+    pub fn force(&self, mut target: ValuePtr) -> Result<ValuePtr> {
+        loop {
+            match target.data() {
+                Value::Flex(m, sp) => match self.metas.get(m.0) {
+                    Some(MetaEntry::Unsolved { .. }) => {
+                        return Ok(target);
+                    }
+                    Some(MetaEntry::Solved { val, .. }) => {
+                        target = app_spine(val.clone(), sp, self, target.span)?;
+                        continue;
+                    }
+                    None => unreachable!("invalid meta variable"),
+                },
+                _ => return Ok(target),
+            }
         }
     }
 }
