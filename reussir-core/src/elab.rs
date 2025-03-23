@@ -13,8 +13,8 @@ use crate::{
     Result,
 };
 
-use std::collections::hash_set::Entry as HSetEntry;
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
+use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
 
 thread_local! {
     static TERM_PLACEHOLDER: TermPtr = with_span(Term::Hole, Span::default());
@@ -293,7 +293,7 @@ impl PartialRenaming {
         ))
     }
 
-    fn rename(&mut self, value: ValuePtr, mctx: &MetaContext) -> Option<TermPtr> {
+    fn rename(&mut self, value: ValuePtr, mctx: &mut MetaContext) -> Option<TermPtr> {
         let value = mctx
             .force(value)
             .inspect_err(|e| error!("failed to force value: {e}"))
@@ -305,7 +305,7 @@ impl PartialRenaming {
                     trace!("occurs check failed during renaming");
                     None
                 }
-                _ => self.prune_flex(*m, sp, mctx),
+                _ => self.prune_flex(*m, sp, mctx, value.span),
             },
             Value::Rigid(x, sp) => {
                 if let Some(y) = self.rename.get(x) {
@@ -351,7 +351,7 @@ impl PartialRenaming {
         &mut self,
         term: TermPtr,
         spine: &Spine,
-        mctx: &MetaContext,
+        mctx: &mut MetaContext,
     ) -> Option<TermPtr> {
         spine.iter().try_fold(term, |acc, (val, icit)| {
             let rhs = self.rename(val.clone(), mctx)?;
@@ -360,14 +360,74 @@ impl PartialRenaming {
         })
     }
 
-    fn prune_flex(&mut self, meta: MetaVar, spine: &Spine, mctx: &MetaContext) -> Option<TermPtr> {
-        todo!("prune_flex")
+    fn prune_flex(
+        &mut self,
+        mut meta: MetaVar,
+        spine: &Spine,
+        mctx: &mut MetaContext,
+        span: Span,
+    ) -> Option<TermPtr> {
+        enum PruneState {
+            Renaming,
+            NonRenaming,
+            NeedsPruning,
+        }
+        let mut state = PruneState::Renaming;
+        let mut sp = Vec::with_capacity(spine.len());
+        for (val, icit) in spine.iter() {
+            let val = mctx
+                .force(val.clone())
+                .inspect_err(|e| error!("failed to force spine value: {e}"))
+                .ok()?;
+            match val.data() {
+                Value::Rigid(x, s) if s.is_empty() => {
+                    let rename = self.rename.get(x);
+                    if let Some(rename) = rename {
+                        let idx = rename.to_index(self.dom);
+                        let var = with_span(Term::Var(idx), val.span);
+                        sp.push(Some((var, *icit)));
+                    } else if matches!(state, PruneState::NonRenaming) {
+                        trace!("cannot prune in non-renaming state");
+                        return None;
+                    } else {
+                        trace!("pruning variable");
+                        sp.push(None);
+                        state = PruneState::NeedsPruning;
+                    }
+                }
+                _ if matches!(state, PruneState::NeedsPruning) => {
+                    trace!("cannot prune in non-renaming state");
+                    return None;
+                }
+                _ => {
+                    let val = self.rename(val.clone(), mctx)?;
+                    sp.push(Some((val, *icit)));
+                    state = PruneState::NonRenaming;
+                }
+            }
+        }
+        if matches!(state, PruneState::NeedsPruning) {
+            meta = Self::prune_meta(sp.iter().map(|v| v.as_ref().map(|(_, i)| *i)), meta, mctx)?;
+        } else if matches!(mctx.get_meta(meta), MetaEntry::Solved { .. }) {
+            error!("should not prune solved meta");
+            return None;
+        }
+        let term = with_span(Term::Meta(meta), span);
+        Some(
+            sp.iter()
+                .filter_map(Option::as_ref)
+                .rfold(term, |acc, (val, icit)| {
+                    let val = val.clone();
+                    let span = acc.span;
+                    with_span(Term::App(acc, val, *icit), span)
+                }),
+        )
     }
 
     fn prune_type<'a>(
-        mut pruning: impl Iterator<Item = &'a Option<Icit>>,
+        mut pruning: impl Iterator<Item = Option<Icit>>,
         mut ty: ValuePtr,
-        mctx: &MetaContext,
+        mctx: &mut MetaContext,
     ) -> Option<TermPtr> {
         let mut renaming = PartialRenaming::default();
         let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
@@ -406,12 +466,16 @@ impl PartialRenaming {
         Some(result)
     }
 
-    fn prune_meta(pruning: &Pruning, meta: MetaVar, mctx: &mut MetaContext) -> Option<MetaVar> {
-        let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta) else {
+    fn prune_meta<'a, I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Option<MetaVar>
+    where
+        I: Iterator<Item = Option<Icit>> + Clone + ExactSizeIterator + DoubleEndedIterator,
+    {
+        let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta).clone() else {
             error!("prune_meta applied to solved meta");
             return None;
         };
-        let pruned_ty = Self::prune_type(pruning.iter().rev(), ty.clone(), mctx)?;
+        let len = pruning.len();
+        let pruned_ty = Self::prune_type(pruning.clone().rev(), ty.clone(), mctx)?;
         let pruned_ty = Environment::new()
             .evaluate(pruned_ty, mctx)
             .inspect_err(|e| {
@@ -419,13 +483,12 @@ impl PartialRenaming {
             })
             .ok()?;
         let span = pruned_ty.span;
-        let ty = ty.clone();
-        let new_meta = mctx.new_meta(pruned_ty, blocking.clone());
+        let new_meta = mctx.new_meta(pruned_ty, blocking);
         let solution_body = with_span(
-            Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.clone()),
+            Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.collect()),
             Span::default(),
         );
-        let solution_lvl = DBLvl(pruning.len());
+        let solution_lvl = DBLvl(len);
         let solution_lambda = stack_lambdas(solution_lvl, ty.clone(), solution_body, mctx)?;
         let solution = Environment::new()
             .evaluate(solution_lambda, mctx)
