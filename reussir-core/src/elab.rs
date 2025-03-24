@@ -335,58 +335,72 @@ impl Elaborator {
         }
     }
 
-    fn unify_impl(&mut self, gamma: DBLvl, lhs: ValuePtr, rhs: ValuePtr) -> Result<()> {
-        trace!(
-            "unifying {:?} with {:?}",
-            quote(gamma, lhs.clone(), &self.meta),
-            quote(gamma, rhs.clone(), &self.meta)
-        );
-        let lhs = self.meta.force(lhs)?;
-        let rhs = self.meta.force(rhs)?;
-        match (lhs.data(), rhs.data()) {
-            (Value::Universe, Value::Universe) => Ok(()),
-            (Value::Pi(x, i, a, b), Value::Pi(y, j, c, d)) if i == j => {
-                self.unify_impl(gamma, a.clone(), c.clone())?;
-                let var = with_span(Value::var(gamma), x.span);
-                let b = b.apply(var.clone(), &self.meta)?;
-                let d = d.apply(var, &self.meta)?;
-                self.unify_impl(gamma.next(), b, d)
-            }
-            (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => self.unify_spine(gamma, s, t),
-            (Value::Flex(x, s), Value::Flex(y, t)) => {
-                if x == y {
-                    self.solve_intersection(gamma, *x, s, t)
-                } else {
-                    self.solve_flex_flex(gamma, (*x, s, lhs.span), (*y, t, rhs.span))
+    fn unify_impl(&mut self, mut gamma: DBLvl, mut lhs: ValuePtr, mut rhs: ValuePtr) -> Result<()> {
+        loop {
+            trace!(
+                "unifying {:?} with {:?}",
+                quote(gamma, lhs.clone(), &self.meta),
+                quote(gamma, rhs.clone(), &self.meta)
+            );
+            lhs = self.meta.force(lhs)?;
+            rhs = self.meta.force(rhs)?;
+            match (lhs.data(), rhs.data()) {
+                (Value::Universe, Value::Universe) => return Ok(()),
+                (Value::Pi(x, i, a, b), Value::Pi(y, j, c, d)) if i == j => {
+                    deep_recursive(|| self.unify_impl(gamma, a.clone(), c.clone()))?;
+                    let var = with_span(Value::var(gamma), x.span);
+                    lhs = b.apply(var.clone(), &self.meta)?;
+                    rhs = d.apply(var, &self.meta)?;
+                    continue;
+                }
+                (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => self.unify_spine(gamma, s, t),
+                (Value::Flex(x, s), Value::Flex(y, t)) => {
+                    return deep_recursive(|| {
+                        if x == y {
+                            self.solve_intersection(gamma, *x, s, t)
+                        } else {
+                            self.solve_flex_flex(gamma, (*x, s, lhs.span), (*y, t, rhs.span))
+                        }
+                    });
+                }
+                (Value::Lambda(n, _, x), Value::Lambda(_, _, y)) => {
+                    let var = with_span(Value::var(gamma), n.span);
+                    lhs = x.apply(var.clone(), &self.meta)?;
+                    rhs = y.apply(var, &self.meta)?;
+                    continue;
+                }
+                (_, Value::Lambda(n, i, x)) => {
+                    let lhs_span = lhs.span;
+                    let var = with_span(Value::var(gamma), n.span);
+                    lhs = app_val(lhs, var.clone(), *i, &self.meta, lhs_span)?;
+                    rhs = x.apply(var, &self.meta)?;
+                    continue;
+                }
+                (Value::Lambda(n, i, x), _) => {
+                    let rhs_span = rhs.span;
+                    let var = with_span(Value::var(gamma), n.span);
+                    lhs = x.apply(var.clone(), &self.meta)?;
+                    rhs = app_val(rhs, var, *i, &self.meta, rhs_span)?;
+                    continue;
+                }
+                (Value::Flex(m, sp), _) => {
+                    return deep_recursive(|| self.solve(gamma, *m, sp, rhs));
+                }
+                (_, Value::Flex(m, sp)) => {
+                    return deep_recursive(|| self.solve(gamma, *m, sp, lhs));
+                }
+                _ => {
+                    return Err(crate::Error::InvalidUnification(
+                        Error::ExpectedInferredMismatch,
+                    ));
                 }
             }
-            (Value::Lambda(n, _, x), Value::Lambda(_, _, y)) => {
-                let var = with_span(Value::var(gamma), n.span);
-                let x = x.apply(var.clone(), &self.meta)?;
-                let y = y.apply(var, &self.meta)?;
-                self.unify_impl(gamma.next(), x, y)
-            }
-            (_, Value::Lambda(n, i, x)) => {
-                let lhs_span = lhs.span;
-                let var = with_span(Value::var(gamma), n.span);
-                let lhs = app_val(lhs, var.clone(), *i, &self.meta, lhs_span)?;
-                let rhs = x.apply(var, &self.meta)?;
-                self.unify_impl(gamma.next(), lhs, rhs)
-            }
-            (Value::Lambda(n, i, x), _) => {
-                let rhs_span = rhs.span;
-                let var = with_span(Value::var(gamma), n.span);
-                let lhs = x.apply(var.clone(), &self.meta)?;
-                let rhs = app_val(rhs, var, *i, &self.meta, rhs_span)?;
-                self.unify_impl(gamma.next(), lhs, rhs)
-            }
-            (Value::Flex(m, sp), _) => self.solve(gamma, *m, sp, rhs),
-            (_, Value::Flex(m, sp)) => self.solve(gamma, *m, sp, lhs),
-            _ => Err(crate::Error::InvalidUnification(
-                Error::ExpectedInferredMismatch,
-            )),
         }
     }
+}
+
+fn deep_recursive<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(32 * 1024, 1024 * 1024, || f())
 }
 
 #[derive(Default)]
