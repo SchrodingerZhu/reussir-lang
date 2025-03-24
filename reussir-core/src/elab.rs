@@ -28,6 +28,14 @@ pub enum Error {
     LambdaBinderType,
     #[error("failed to elaborate terms into same types")]
     Placeholder,
+    #[error("meta variable is already solved")]
+    SolvedMeta,
+    #[error("meta variable occurs in its own solution")]
+    OccursCheck,
+    #[error("unsupported unification pattern")]
+    Unsupported,
+    #[error("escaping rigid variable")]
+    EscapingRigid,
 }
 
 pub struct Elaborator {
@@ -186,12 +194,15 @@ impl Elaborator {
             self.apply_all_implicit_args((term, ty))
         }
     }
-    pub fn unify_impl(&mut self, lhs: ValuePtr, rhs: ValuePtr) -> Option<()> {
+    pub fn unify_impl(&mut self, lhs: ValuePtr, rhs: ValuePtr) -> Result<()> {
         todo!("unify")
     }
     pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
         self.unify_impl(lhs.clone(), rhs.clone())
-            .ok_or_else(|| {
+            .inspect_err(|e| {
+                trace!("failed to unify {lhs:?} with {rhs:?} ({e})");
+            })
+            .map_err(|_| {
                 let lhs = quote(self.ctx.level, lhs, &self.meta)?;
                 let rhs = quote(self.ctx.level, rhs, &self.meta)?;
                 Ok(crate::Error::UnificationFailure(lhs, rhs, err))
@@ -206,6 +217,50 @@ impl Elaborator {
     }
     pub fn check(&mut self, term: TermPtr, ty: ValuePtr) -> Result<TermPtr> {
         todo!("check")
+    }
+
+    fn solve_with_partial_renaming(
+        &mut self,
+        gamma: DBLvl,
+        meta: MetaVar,
+        (mut renaming, pruning): (PartialRenaming, Option<Pruning>),
+        value: ValuePtr,
+    ) -> Result<()> {
+        trace!(
+            "solving meta {meta:?} with right-hand side {:?}",
+            quote(gamma, value.clone(), &self.meta)
+        );
+        let MetaEntry::Unsolved { ty, blocking } = self.meta.get_meta(meta).clone() else {
+            return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
+        };
+        if let Some(pruning) = pruning {
+            prune_type(pruning.iter().rev().copied(), ty.clone(), &mut self.meta)?;
+        }
+
+        renaming.with_occ(meta, |renaming| {
+            let rhs = renaming.rename(value, &mut self.meta)?;
+            let rhs = stack_lambdas(renaming.dom, ty.clone(), rhs, &mut self.meta)?;
+            let solution = Environment::new().evaluate(rhs, &mut self.meta)?;
+            self.meta
+                .set_meta(meta, MetaEntry::Solved { val: solution, ty });
+
+            for i in blocking.iter().cloned() {
+                self.retry_check(i)?;
+            }
+
+            Ok(())
+        })
+    }
+
+    pub fn solve(
+        &mut self,
+        gamma: DBLvl,
+        meta: MetaVar,
+        spine: &Spine,
+        rhs: ValuePtr,
+    ) -> Result<()> {
+        let renaming = PartialRenaming::invert(gamma, spine, &self.meta)?;
+        self.solve_with_partial_renaming(gamma, meta, renaming, rhs)
     }
 }
 
@@ -237,16 +292,23 @@ impl PartialRenaming {
     fn skip(&mut self) {
         self.cod.0 += 1;
     }
-    fn invert(gamma: DBLvl, spine: &Spine, mctx: &MetaContext) -> Option<(Self, Option<Pruning>)> {
+    fn with_occ<F, R>(&mut self, occ: MetaVar, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let old_occ = self.occ;
+        self.occ = Some(occ);
+        let res = f(self);
+        self.occ = old_occ;
+        res
+    }
+    fn invert(gamma: DBLvl, spine: &Spine, mctx: &MetaContext) -> Result<(Self, Option<Pruning>)> {
         let mut rename = FxHashMapRand::default();
         let mut nonlinear = FxHashSetRand::default();
         let mut dom = DBLvl::zero();
         let mut new_spine = Vec::with_capacity(spine.len());
         for (val, icit) in spine.iter() {
-            let val = mctx
-                .force(val.clone())
-                .inspect_err(|e| error!("failed to force spine value: {e}"))
-                .ok()?;
+            let val = mctx.force(val.clone())?;
             match val.data() {
                 Value::Rigid(level, s) if s.is_empty() => {
                     let rename_entry = rename.entry(*level);
@@ -260,8 +322,7 @@ impl PartialRenaming {
                     new_spine.push((*level, *icit));
                 }
                 _ => {
-                    trace!("invalid unification pattern");
-                    return None;
+                    return Err(crate::Error::InvalidUnification(Error::Unsupported));
                 }
             }
             dom = dom.next();
@@ -282,7 +343,7 @@ impl PartialRenaming {
                     .collect(),
             )
         };
-        Some((
+        Ok((
             Self {
                 occ: None,
                 dom,
@@ -293,18 +354,12 @@ impl PartialRenaming {
         ))
     }
 
-    fn rename(&mut self, value: ValuePtr, mctx: &mut MetaContext) -> Option<TermPtr> {
-        let value = mctx
-            .force(value)
-            .inspect_err(|e| error!("failed to force value: {e}"))
-            .ok()?;
+    fn rename(&mut self, value: ValuePtr, mctx: &mut MetaContext) -> Result<TermPtr> {
+        let value = mctx.force(value)?;
 
         match value.data() {
             Value::Flex(m, sp) => match &self.occ {
-                Some(n) if m == n => {
-                    trace!("occurs check failed during renaming");
-                    None
-                }
+                Some(n) if m == n => Err(crate::Error::InvalidUnification(Error::OccursCheck)),
                 _ => self.prune_flex(*m, sp, mctx, value.span),
             },
             Value::Rigid(x, sp) => {
@@ -313,37 +368,26 @@ impl PartialRenaming {
                     let var = with_span(Term::Var(idx), value.span);
                     self.rename_spine(var, sp, mctx)
                 } else {
-                    trace!("encountered escaping rigid variable during renaming");
-                    return None;
+                    Err(crate::Error::InvalidUnification(Error::EscapingRigid))
                 }
             }
             Value::Lambda(x, icit, closure) => {
                 let var = with_span(Value::var(self.cod), x.span);
-                let body = closure
-                    .apply(var, mctx)
-                    .inspect_err(|e| {
-                        trace!("failed to apply closure: {e}");
-                    })
-                    .ok()?;
+                let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
-                Some(with_span(Term::Lambda(x.clone(), *icit, body), value.span))
+                Ok(with_span(Term::Lambda(x.clone(), *icit, body), value.span))
             }
             Value::Pi(x, icit, arg_ty, closure) => {
                 let arg_ty = self.rename(arg_ty.clone(), mctx)?;
                 let var = with_span(Value::var(self.cod), x.span);
-                let body = closure
-                    .apply(var, mctx)
-                    .inspect_err(|e| {
-                        trace!("failed to apply closure: {e}");
-                    })
-                    .ok()?;
+                let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
-                Some(with_span(
+                Ok(with_span(
                     Term::Pi(x.clone(), *icit, arg_ty, body),
                     value.span,
                 ))
             }
-            Value::Universe => Some(with_span(Term::Universe, value.span)),
+            Value::Universe => Ok(with_span(Term::Universe, value.span)),
         }
     }
 
@@ -352,11 +396,11 @@ impl PartialRenaming {
         term: TermPtr,
         spine: &Spine,
         mctx: &mut MetaContext,
-    ) -> Option<TermPtr> {
+    ) -> Result<TermPtr> {
         spine.iter().try_fold(term, |acc, (val, icit)| {
             let rhs = self.rename(val.clone(), mctx)?;
             let span = acc.span;
-            Some(with_span(Term::App(acc, rhs, *icit), span))
+            Ok(with_span(Term::App(acc, rhs, *icit), span))
         })
     }
 
@@ -366,7 +410,7 @@ impl PartialRenaming {
         spine: &Spine,
         mctx: &mut MetaContext,
         span: Span,
-    ) -> Option<TermPtr> {
+    ) -> Result<TermPtr> {
         enum PruneState {
             Renaming,
             NonRenaming,
@@ -375,10 +419,7 @@ impl PartialRenaming {
         let mut state = PruneState::Renaming;
         let mut sp = Vec::with_capacity(spine.len());
         for (val, icit) in spine.iter() {
-            let val = mctx
-                .force(val.clone())
-                .inspect_err(|e| error!("failed to force spine value: {e}"))
-                .ok()?;
+            let val = mctx.force(val.clone())?;
             match val.data() {
                 Value::Rigid(x, s) if s.is_empty() => {
                     let rename = self.rename.get(x);
@@ -387,8 +428,7 @@ impl PartialRenaming {
                         let var = with_span(Term::Var(idx), val.span);
                         sp.push(Some((var, *icit)));
                     } else if matches!(state, PruneState::NonRenaming) {
-                        trace!("cannot prune in non-renaming state");
-                        return None;
+                        return Err(crate::Error::InvalidUnification(Error::Unsupported));
                     } else {
                         trace!("pruning variable");
                         sp.push(None);
@@ -397,7 +437,7 @@ impl PartialRenaming {
                 }
                 _ if matches!(state, PruneState::NeedsPruning) => {
                     trace!("cannot prune in non-renaming state");
-                    return None;
+                    return Err(crate::Error::InvalidUnification(Error::Unsupported));
                 }
                 _ => {
                     let val = self.rename(val.clone(), mctx)?;
@@ -407,97 +447,19 @@ impl PartialRenaming {
             }
         }
         if matches!(state, PruneState::NeedsPruning) {
-            meta = Self::prune_meta(sp.iter().map(|v| v.as_ref().map(|(_, i)| *i)), meta, mctx)?;
+            meta = prune_meta(sp.iter().map(|v| v.as_ref().map(|(_, i)| *i)), meta, mctx)?;
         } else if matches!(mctx.get_meta(meta), MetaEntry::Solved { .. }) {
-            error!("should not prune solved meta");
-            return None;
+            return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
         }
         let term = with_span(Term::Meta(meta), span);
-        Some(
-            sp.iter()
-                .filter_map(Option::as_ref)
-                .rfold(term, |acc, (val, icit)| {
-                    let val = val.clone();
-                    let span = acc.span;
-                    with_span(Term::App(acc, val, *icit), span)
-                }),
-        )
-    }
-
-    fn prune_type<'a>(
-        mut pruning: impl Iterator<Item = Option<Icit>>,
-        mut ty: ValuePtr,
-        mctx: &mut MetaContext,
-    ) -> Option<TermPtr> {
-        let mut renaming = PartialRenaming::default();
-        let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
-        let mut cursor = &mut result;
-        loop {
-            ty = mctx
-                .force(ty)
-                .inspect_err(|e| error!("failed to force type: {e}"))
-                .ok()?;
-            let Some(mask) = pruning.next() else { break };
-            let Value::Pi(x, icit, arg_ty, closure) = ty.data() else {
-                error!("prune_type applied to non-pi type");
-                return None;
-            };
-            let var = with_span(Value::var(renaming.cod), x.span);
-            if mask.is_none() {
-                let arg_ty = renaming.rename(arg_ty.clone(), mctx)?;
-                let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
-                *cursor = with_span(Term::Pi(x.clone(), *icit, arg_ty, hole), ty.span);
-                let Term::Pi(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
-                    unreachable!("expected pi type");
-                };
-                cursor = body;
-                renaming.lift_inplace();
-            } else {
-                renaming.skip();
-            }
-            ty = closure
-                .apply(var, mctx)
-                .inspect_err(|e| {
-                    trace!("failed to apply closure: {e}");
-                })
-                .ok()?;
-        }
-        *cursor = renaming.rename(ty, mctx)?;
-        Some(result)
-    }
-
-    fn prune_meta<'a, I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Option<MetaVar>
-    where
-        I: Iterator<Item = Option<Icit>> + Clone + ExactSizeIterator + DoubleEndedIterator,
-    {
-        let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta).clone() else {
-            error!("prune_meta applied to solved meta");
-            return None;
-        };
-        let len = pruning.len();
-        let pruned_ty = Self::prune_type(pruning.clone().rev(), ty.clone(), mctx)?;
-        let pruned_ty = Environment::new()
-            .evaluate(pruned_ty, mctx)
-            .inspect_err(|e| {
-                error!("failed to evaluate pruned type: {e}");
-            })
-            .ok()?;
-        let span = pruned_ty.span;
-        let new_meta = mctx.new_meta(pruned_ty, blocking);
-        let solution_body = with_span(
-            Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.collect()),
-            Span::default(),
-        );
-        let solution_lvl = DBLvl(len);
-        let solution_lambda = stack_lambdas(solution_lvl, ty.clone(), solution_body, mctx)?;
-        let solution = Environment::new()
-            .evaluate(solution_lambda, mctx)
-            .inspect_err(|e| {
-                error!("failed to evaluate solution: {e}");
-            })
-            .ok()?;
-        mctx.set_meta(meta, MetaEntry::Solved { val: solution, ty });
-        Some(new_meta)
+        Ok(sp
+            .iter()
+            .filter_map(Option::as_ref)
+            .rfold(term, |acc, (val, icit)| {
+                let val = val.clone();
+                let span = acc.span;
+                with_span(Term::App(acc, val, *icit), span)
+            }))
     }
 }
 
@@ -506,16 +468,13 @@ fn stack_lambdas(
     mut ty: ValuePtr,
     term: TermPtr,
     mctx: &MetaContext,
-) -> Option<TermPtr> {
+) -> Result<TermPtr> {
     let mut current = DBLvl::zero();
     let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
     let mut cursor = &mut result;
     while current != level {
         current = current.next();
-        ty = mctx
-            .force(ty.clone())
-            .inspect_err(|e| error!("failed to force type: {e}"))
-            .ok()?;
+        ty = mctx.force(ty.clone())?;
         if let Value::Pi(x, icit, _, closure) = ty.data() {
             let x = if x.is_anon() {
                 WithSpan::new(Ustr::from(&format!("α{}", current.0)), x.span)
@@ -524,12 +483,7 @@ fn stack_lambdas(
             };
             let var = with_span(Value::var(current), x.span);
             let icit = *icit;
-            ty = closure
-                .apply(var, mctx)
-                .inspect_err(|e| {
-                    trace!("failed to apply closure: {e}");
-                })
-                .ok()?;
+            ty = closure.apply(var, mctx)?;
             let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
             *cursor = with_span(Term::Lambda(x, icit, hole), term.span);
             let Term::Lambda(_, _, body) = Rc::make_mut(cursor).data_mut() else {
@@ -537,11 +491,66 @@ fn stack_lambdas(
             };
             cursor = body;
         } else {
-            error!("stack_lambdas applied to non-pi type");
-            return None;
+            return Err(crate::Error::InvalidUnification(Error::Unsupported));
         }
         current = current.next();
     }
     *cursor = term;
-    Some(result)
+    Ok(result)
+}
+
+fn prune_type<'a>(
+    mut pruning: impl Iterator<Item = Option<Icit>>,
+    mut ty: ValuePtr,
+    mctx: &mut MetaContext,
+) -> Result<TermPtr> {
+    let mut renaming = PartialRenaming::default();
+    let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
+    let mut cursor = &mut result;
+    loop {
+        ty = mctx.force(ty)?;
+        let Some(mask) = pruning.next() else { break };
+        let Value::Pi(x, icit, arg_ty, closure) = ty.data() else {
+            return Err(crate::Error::InvalidUnification(Error::Unsupported));
+        };
+        let var = with_span(Value::var(renaming.cod), x.span);
+        if mask.is_none() {
+            let arg_ty = renaming.rename(arg_ty.clone(), mctx)?;
+            let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
+            *cursor = with_span(Term::Pi(x.clone(), *icit, arg_ty, hole), ty.span);
+            let Term::Pi(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
+                unreachable!("expected pi type");
+            };
+            cursor = body;
+            renaming.lift_inplace();
+        } else {
+            renaming.skip();
+        }
+        ty = closure.apply(var, mctx)?;
+    }
+    *cursor = renaming.rename(ty, mctx)?;
+    Ok(result)
+}
+
+fn prune_meta<'a, I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Result<MetaVar>
+where
+    I: Iterator<Item = Option<Icit>> + Clone + ExactSizeIterator + DoubleEndedIterator,
+{
+    let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta).clone() else {
+        return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
+    };
+    let len = pruning.len();
+    let pruned_ty = prune_type(pruning.clone().rev(), ty.clone(), mctx)?;
+    let pruned_ty = Environment::new().evaluate(pruned_ty, mctx)?;
+    let span = pruned_ty.span;
+    let new_meta = mctx.new_meta(pruned_ty, blocking);
+    let solution_body = with_span(
+        Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.collect()),
+        Span::default(),
+    );
+    let solution_lvl = DBLvl(len);
+    let solution_lambda = stack_lambdas(solution_lvl, ty.clone(), solution_body, mctx)?;
+    let solution = Environment::new().evaluate(solution_lambda, mctx)?;
+    mctx.set_meta(meta, MetaEntry::Solved { val: solution, ty });
+    Ok(new_meta)
 }
