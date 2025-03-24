@@ -1,10 +1,11 @@
 use rpds::Vector;
 
 use crate::{
+    Result,
     meta::MetaContext,
     term::{Term, TermPtr},
-    utils::{with_span, with_span_as, Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine},
-    value::{Value, ValuePtr}, Result,
+    utils::{Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine, with_span, with_span_as},
+    value::{Value, ValuePtr},
 };
 
 #[derive(Clone, Debug)]
@@ -52,10 +53,7 @@ impl Environment {
             crate::term::Term::Var(idx) => Ok(self.get_var(*idx)),
             crate::term::Term::Lambda(name, icit, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
-                Ok(with_span_as(
-                    Value::Lambda(*name, *icit, closure),
-                    term,
-                ))
+                Ok(with_span_as(Value::Lambda(*name, *icit, closure), term))
             }
             crate::term::Term::App(lhs, rhs, icit) => {
                 let lhs = self.evaluate(lhs.clone(), meta)?;
@@ -71,10 +69,7 @@ impl Environment {
             crate::term::Term::Pi(name, icit, ty, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
                 let ty = self.evaluate(ty.clone(), meta)?;
-                Ok(with_span_as(
-                    Value::Pi(*name, *icit, ty, closure),
-                    term,
-                ))
+                Ok(with_span_as(Value::Pi(*name, *icit, ty, closure), term))
             }
             crate::term::Term::Let { term, body, .. } => {
                 let term = self.evaluate(term.clone(), meta)?;
@@ -182,12 +177,7 @@ pub fn quote(level: DBLvl, value: ValuePtr, mctx: &MetaContext) -> Result<TermPt
             let arg = with_span(Value::var(level), name.span);
             let body = closure.apply(arg, mctx)?;
             Ok(with_span_as(
-                Term::Pi(
-                    *name,
-                    *icit,
-                    arg_ty,
-                    quote(level.next(), body, mctx)?,
-                ),
+                Term::Pi(*name, *icit, arg_ty, quote(level.next(), body, mctx)?),
                 value,
             ))
         }

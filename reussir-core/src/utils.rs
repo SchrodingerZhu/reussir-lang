@@ -7,7 +7,7 @@ use std::{
 use rpds::Vector;
 use ustr::Ustr;
 
-use crate::{eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr, Result};
+use crate::{Result, eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
 
 #[derive(Debug, Copy, Clone)]
 pub struct WithSpan<T> {

@@ -1,12 +1,12 @@
 use rpds::{HashTrieMap, Vector};
 
 use crate::{
-    eval::{quote, Environment},
+    Result,
+    eval::{Environment, quote},
     meta::MetaContext,
     term::{Term, TermPtr},
-    utils::{with_span, DBLvl, Icit, Name, Pruning, Span},
+    utils::{DBLvl, Icit, Name, Pruning, Span, with_span},
     value::{Value, ValuePtr},
-    Result,
 };
 #[derive(Debug, Clone)]
 pub struct Context {

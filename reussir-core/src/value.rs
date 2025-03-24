@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::{
     meta::MetaVar,
-    utils::{empty_spine, Closure, DBLvl, Icit, Name, Spine, WithSpan},
+    utils::{Closure, DBLvl, Icit, Name, Spine, WithSpan, empty_spine},
 };
 
 pub type ValuePtr = Rc<WithSpan<Value>>;

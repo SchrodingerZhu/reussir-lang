@@ -3,12 +3,12 @@ use rpds::HashTrieSet;
 use rustc_hash::FxRandomState;
 
 use crate::{
-    ctx::Context,
-    eval::{app_spine, Environment},
-    term::TermPtr,
-    utils::{with_span, Span},
-    value::{Value, ValuePtr},
     Result,
+    ctx::Context,
+    eval::{Environment, app_spine},
+    term::TermPtr,
+    utils::{Span, with_span},
+    value::{Value, ValuePtr},
 };
 
 #[repr(transparent)]

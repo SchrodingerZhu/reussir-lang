@@ -4,15 +4,17 @@ use tracing::{error, trace};
 use ustr::Ustr;
 
 use crate::{
+    Result,
     ctx::Context,
-    eval::{quote, Environment},
+    eval::{Environment, quote},
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
-    utils::{with_span, DBLvl, Icit, Name, Pruning, Span, Spine, WithSpan},
+    utils::{DBLvl, Icit, Name, Pruning, Span, Spine, WithSpan, with_span},
     value::{self, Value, ValuePtr},
-    Result,
 };
 
+use crate::eval::app_val;
+use rpds::Vector;
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
 use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
 
@@ -36,6 +38,8 @@ pub enum Error {
     Unsupported,
     #[error("escaping rigid variable")]
     EscapingRigid,
+    #[error("spine does not match")]
+    SpineMismatch,
 }
 
 pub struct Elaborator {
@@ -71,8 +75,7 @@ impl Elaborator {
             MetaEntry::Unsolved { ty, blocking } => {
                 trace!(
                     "unifying unconstrained meta {:?} with placeholder {:?}",
-                    mvar,
-                    expected
+                    mvar, expected
                 );
                 let span = expected.span;
                 let solution = self.ctx.close_term(expected, span);
@@ -88,8 +91,7 @@ impl Elaborator {
             MetaEntry::Solved { val, .. } => {
                 trace!(
                     "unifying solved meta {:?} with placeholder {:?}",
-                    mvar,
-                    expected
+                    mvar, expected
                 );
                 let lhs = self.ctx.env_mut().evaluate(expected, &self.meta)?;
                 let (env, pruning) = self.ctx.env_mut_pruning();
@@ -194,11 +196,8 @@ impl Elaborator {
             self.apply_all_implicit_args((term, ty))
         }
     }
-    pub fn unify_impl(&mut self, lhs: ValuePtr, rhs: ValuePtr) -> Result<()> {
-        todo!("unify")
-    }
     pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
-        self.unify_impl(lhs.clone(), rhs.clone())
+        self.unify_impl(self.ctx.level, lhs.clone(), rhs.clone())
             .inspect_err(|e| {
                 trace!("failed to unify {lhs:?} with {rhs:?} ({e})");
             })
@@ -207,10 +206,7 @@ impl Elaborator {
                 let rhs = quote(self.ctx.level, rhs, &self.meta)?;
                 Ok(crate::Error::UnificationFailure(lhs, rhs, err))
             })
-            .map_err(|e| match e {
-                Ok(e) => e,
-                Err(e) => e,
-            })
+            .map_err(|e| e.unwrap_or_else(identity))
     }
     pub fn infer(&mut self, term: TermPtr) -> Result<(TermPtr, ValuePtr)> {
         todo!("infer")
@@ -261,6 +257,135 @@ impl Elaborator {
     ) -> Result<()> {
         let renaming = PartialRenaming::invert(gamma, spine, &self.meta)?;
         self.solve_with_partial_renaming(gamma, meta, renaming, rhs)
+    }
+
+    fn unify_spine(&mut self, gamma: DBLvl, lhs: &Spine, rhs: &Spine) -> Result<()> {
+        if lhs.len() != rhs.len() {
+            return Err(crate::Error::InvalidUnification(Error::SpineMismatch));
+        }
+        for ((lhs, _), (rhs, _)) in lhs.iter().zip(rhs.iter()) {
+            self.unify_impl(gamma, lhs.clone(), rhs.clone())?
+        }
+        Ok(())
+    }
+
+    fn solve_flex_flex<'a>(
+        &mut self,
+        gamma: DBLvl,
+        mut lhs: (MetaVar, &'a Spine, Span),
+        mut rhs: (MetaVar, &'a Spine, Span),
+    ) -> Result<()> {
+        if lhs.1.len() < rhs.1.len() {
+            std::mem::swap(&mut lhs, &mut rhs);
+        }
+        if let Ok(res) = PartialRenaming::invert(gamma, lhs.1, &self.meta) {
+            self.solve_with_partial_renaming(
+                gamma,
+                lhs.0,
+                res,
+                with_span(Value::Flex(rhs.0, rhs.1.clone()), rhs.2),
+            )
+        } else {
+            self.solve(
+                gamma,
+                rhs.0,
+                rhs.1,
+                with_span(Value::Flex(lhs.0, lhs.1.clone()), lhs.2),
+            )
+        }
+    }
+
+    fn solve_intersection(
+        &mut self,
+        gamma: DBLvl,
+        meta: MetaVar,
+        lhs: &Spine,
+        rhs: &Spine,
+    ) -> Result<()> {
+        if lhs.len() != rhs.len() {
+            return Err(crate::Error::InvalidUnification(Error::SpineMismatch));
+        }
+        let mut success = true;
+        let mut to_prune = false;
+        let mut pruning = Vec::new();
+        for ((x, i), (y, _)) in lhs.iter().zip(rhs.iter()) {
+            let x = self.meta.force(x.clone())?;
+            let y = self.meta.force(y.clone())?;
+            let (Value::Rigid(x, s), Value::Rigid(y, t)) = (x.data(), y.data()) else {
+                success = false;
+                break;
+            };
+            if !s.is_empty() || !t.is_empty() {
+                success = false;
+                break;
+            }
+            pruning.push(if x == y {
+                Some(*i)
+            } else {
+                to_prune = true;
+                None
+            });
+        }
+        if !success {
+            self.unify_spine(gamma, lhs, rhs)
+        } else if to_prune {
+            prune_meta(pruning.iter().copied(), meta, &mut self.meta).and(Ok(()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn unify_impl(&mut self, gamma: DBLvl, lhs: ValuePtr, rhs: ValuePtr) -> Result<()> {
+        trace!(
+            "unifying {:?} with {:?}",
+            quote(gamma, lhs.clone(), &self.meta),
+            quote(gamma, rhs.clone(), &self.meta)
+        );
+        let lhs = self.meta.force(lhs)?;
+        let rhs = self.meta.force(rhs)?;
+        match (lhs.data(), rhs.data()) {
+            (Value::Universe, Value::Universe) => Ok(()),
+            (Value::Pi(x, i, a, b), Value::Pi(y, j, c, d)) if i == j => {
+                self.unify_impl(gamma, a.clone(), c.clone())?;
+                let var = with_span(Value::var(gamma), x.span);
+                let b = b.apply(var.clone(), &self.meta)?;
+                let d = d.apply(var, &self.meta)?;
+                self.unify_impl(gamma.next(), b, d)
+            }
+            (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => self.unify_spine(gamma, s, t),
+            (Value::Flex(x, s), Value::Flex(y, t)) => {
+                if x == y {
+                    self.solve_intersection(gamma, *x, s, t)
+                } else {
+                    self.solve_flex_flex(gamma, (*x, s, lhs.span), (*y, t, rhs.span))
+                }
+            }
+            (Value::Lambda(n, _, x), Value::Lambda(_, _, y)) => {
+                let var = with_span(Value::var(gamma), n.span);
+                let x = x.apply(var.clone(), &self.meta)?;
+                let y = y.apply(var, &self.meta)?;
+                self.unify_impl(gamma.next(), x, y)
+            }
+            (_, Value::Lambda(n, i, x)) => {
+                let lhs_span = lhs.span;
+                let var = with_span(Value::var(gamma), n.span);
+                let lhs = app_val(lhs, var.clone(), *i, &self.meta, lhs_span)?;
+                let rhs = x.apply(var, &self.meta)?;
+                self.unify_impl(gamma.next(), lhs, rhs)
+            }
+            (Value::Lambda(n, i, x), _) => {
+                let rhs_span = rhs.span;
+                let var = with_span(Value::var(gamma), n.span);
+                let lhs = x.apply(var.clone(), &self.meta)?;
+                let rhs = app_val(rhs, var, *i, &self.meta, rhs_span)?;
+                self.unify_impl(gamma.next(), lhs, rhs)
+            }
+            (Value::Flex(m, sp), _) => self.solve(gamma, *m, sp, rhs),
+            (_, Value::Flex(m, sp)) => self.solve(gamma, *m, sp, lhs),
+            _ => Err(crate::Error::InvalidUnification(
+                Error::ExpectedInferredMismatch,
+            )),
+        }
     }
 }
 
