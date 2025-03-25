@@ -241,6 +241,7 @@ impl Elaborator {
             term,
             quote(self.ctx.level, ty.clone(), &self.meta)
         );
+        let term_span = term.span;
         let ty = self.meta.force(ty)?;
         match (term.data(), ty.data()) {
             (
@@ -267,7 +268,32 @@ impl Elaborator {
                     ))
                 })
             }
-            _ => todo!("check"),
+            (_, Value::Flex(meta, _)) => {
+                let closed_flex = self.evaluated_close_type(ty.clone(), ty.span)?;
+                let placeholder = self.meta.new_meta(closed_flex, Default::default());
+                let chk = self.meta.new_check(self.ctx.clone(), term, ty.clone(), placeholder);
+                self.meta.add_blocker(chk, *meta);
+                trace!("delayed check {chk:?} for meta {meta:?}");
+                Ok(with_span(Term::Postponed(chk), term_span))
+            }
+            (Term::Let{name, ty: var_ty, term, body }, _) => {
+                let universe = with_span(Value::Universe, term.span);
+                let var_ty = self.check(var_ty.clone(), universe)?;
+                let var_ty_val = self.ctx.env_mut().evaluate(var_ty.clone(), &self.meta)?;
+                let term = self.check(term.clone(), var_ty_val.clone())?;
+                let term_val = self.ctx.env_mut().evaluate(term.clone(), &self.meta)?;
+                self.with_def(name.clone(), term.clone(), term_val, var_ty.clone(), var_ty_val, |this| {
+                    let body = this.check(body.clone(), ty)?;
+                    Ok(with_span(Term::Let { name: name.clone(), ty: var_ty, term, body }, term_span))
+                })
+            }
+            (Term::Hole, _) => self.fresh_meta(ty),
+            _ => {
+                let inferred = self.infer(term.clone())?;
+                let (res, inferred) = self.apply_implicit_if_neutral(inferred)?;
+                self.unify(ty, inferred, Error::ExpectedInferredMismatch)?;
+                Ok(res)
+            },
         }
     }
 
@@ -283,6 +309,23 @@ impl Elaborator {
             .inspect_err(|_| {
                 self.ctx.unbind_mut(name);
             })
+    }
+
+    fn with_def<F, R>(&mut self, name: Name, term: TermPtr, value: ValuePtr, ty: TermPtr, ty_val: ValuePtr, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self) -> Result<R>,
+    {
+        let old = self.ctx.def_mut(name, term, value, ty, ty_val)?;
+        match f(self) {
+            Ok(res) => {
+                self.ctx.undef_mut(name, old);
+                Ok(res)
+            }
+            Err(e) => {
+                self.ctx.undef_mut(name, old);
+                Err(e)
+            }
+        }
     }
 
     fn solve_with_partial_renaming(
