@@ -40,71 +40,53 @@ impl Context {
     pub fn env_mut_pruning(&mut self) -> (&mut Environment, &Pruning) {
         (&mut self.env, &self.pruning)
     }
-    pub fn with_bind<F, R>(
-        &mut self,
-        meta: &MetaContext,
-        name: Name,
-        ty: ValuePtr,
-        f: F,
-    ) -> Result<R>
-    where
-        F: FnOnce(&mut Self) -> Result<R>,
-    {
-        let old;
-        if let Some(entry) = self.name_types.get_mut(&name) {
-            old = Some(entry.clone());
-            *entry = (self.level, ty.clone());
-        } else {
-            old = None;
-            self.name_types.insert_mut(name, (self.level, ty.clone()));
-        }
-        let res = self.with_binder(meta, name, ty, f);
-        if let Some(old) = old {
-            self.name_types.insert_mut(name, old);
-        } else {
-            self.name_types.remove_mut(&name);
-        }
-        res
-    }
-    pub fn with_binder<F, R>(
-        &mut self,
-        meta: &MetaContext,
-        name: Name,
-        ty: ValuePtr,
-        f: F,
-    ) -> Result<R>
-    where
-        F: FnOnce(&mut Self) -> Result<R>,
-    {
-        let var = with_span(Value::var(self.level), name.span);
-        self.env.push_back_mut(var.clone());
-        let ty = match quote(self.level, ty, meta) {
-            Ok(ty) => ty,
-            Err(e) => {
-                self.env.pop_back_mut();
-                return Err(e);
-            }
-        };
-        self.locals.push_back_mut((name, VarKind::Bound { ty }));
+
+    pub fn bind_mut(&mut self, meta: &MetaContext, name: Name, ty: ValuePtr) -> Result<()> {
+        let quoted = quote(self.level, ty.clone(), meta)?;
+        self.env
+            .push_back_mut(with_span(Value::var(self.level), ty.span));
         self.pruning.push_back_mut(Some(Icit::Expl));
-        let res = f(self);
-        self.pruning.drop_last_mut();
-        self.locals.drop_last_mut();
-        self.env.pop_back_mut();
-        res
+        self.name_types.insert_mut(name, (self.level, ty));
+        self.locals
+            .push_back_mut((name, VarKind::Bound { ty: quoted }));
+        self.level = self.level.next();
+        Ok(())
     }
-    pub fn with_def<F, R>(
+
+    pub fn unbind_mut(&mut self, name: Name) {
+        self.locals.drop_last_mut();
+        self.pruning.drop_last_mut();
+        self.env.pop_back_mut();
+        self.level = DBLvl(self.level.0 - 1);
+        self.name_types.remove_mut(&name);
+    }
+
+    pub fn binder_mut(&mut self, meta: &MetaContext, name: Name, ty: ValuePtr) -> Result<()> {
+        let quoted = quote(self.level, ty.clone(), meta)?;
+        self.env
+            .push_back_mut(with_span(Value::var(self.level), ty.span));
+        self.pruning.push_back_mut(Some(Icit::Expl));
+        self.locals
+            .push_back_mut((name, VarKind::Bound { ty: quoted }));
+        self.level = self.level.next();
+        Ok(())
+    }
+
+    pub fn unbinder_mut(&mut self) {
+        self.locals.drop_last_mut();
+        self.pruning.drop_last_mut();
+        self.env.pop_back_mut();
+        self.level = DBLvl(self.level.0 - 1);
+    }
+
+    pub fn def_mut(
         &mut self,
         name: Name,
         term: TermPtr,
         value: ValuePtr,
         ty: TermPtr,
         vty: ValuePtr,
-        f: F,
-    ) -> R
-    where
-        F: FnOnce(&mut Self) -> R,
-    {
+    ) -> Result<Option<(DBLvl, ValuePtr)>> {
         let old;
         self.env.push_back_mut(value);
         self.locals.push_back_mut((
@@ -121,7 +103,9 @@ impl Context {
             old = None;
             self.name_types.insert_mut(name, (self.level, vty.clone()));
         }
-        let res = f(self);
+        Ok(old)
+    }
+    pub fn undef_mut(&mut self, name: Name, old: Option<(DBLvl, ValuePtr)>) {
         if let Some(old) = old {
             self.name_types.insert_mut(name, old);
         } else {
@@ -129,7 +113,6 @@ impl Context {
         }
         self.locals.drop_last_mut();
         self.env.pop_back_mut();
-        res
     }
     pub fn close_term(&self, term: TermPtr, span: Span) -> TermPtr {
         self.locals

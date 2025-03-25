@@ -1,7 +1,7 @@
 use either::Either::Left;
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use thiserror::Error;
-use tracing::{error, trace};
+use tracing::{error, span, trace};
 use ustr::Ustr;
 
 use crate::{
@@ -197,6 +197,29 @@ impl Elaborator {
             self.apply_all_implicit_args((term, ty))
         }
     }
+    fn apply_implicit_until_name(
+        &mut self,
+        name: Name,
+        (mut term, mut ty): (TermPtr, ValuePtr),
+    ) -> Result<(TermPtr, ValuePtr)> {
+        loop {
+            ty = self.meta.force(ty)?;
+            match ty.data() {
+                Value::Pi(x, Icit::Impl, arg_ty, body) => {
+                    if x == &name {
+                        return Ok((term, ty));
+                    }
+                    let meta = self.fresh_meta(arg_ty.clone())?;
+                    let value = self.ctx.env_mut().evaluate(meta.clone(), &self.meta)?;
+                    let span = term.span;
+                    term = with_span(Term::App(term, meta, Left(Icit::Impl)), span);
+                    ty = body.apply(value, &self.meta)?;
+                    continue;
+                }
+                _ => return Err(crate::Error::NamedImplicitNotFound(name)),
+            }
+        }
+    }
     pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
         self.unify_impl(self.ctx.level, lhs.clone(), rhs.clone())
             .inspect_err(|e| {
@@ -213,7 +236,53 @@ impl Elaborator {
         todo!("infer")
     }
     pub fn check(&mut self, term: TermPtr, ty: ValuePtr) -> Result<TermPtr> {
-        todo!("check")
+        trace!(
+            "checking term {:?} against type {:?}",
+            term,
+            quote(self.ctx.level, ty.clone(), &self.meta)
+        );
+        let ty = self.meta.force(ty)?;
+        match (term.data(), ty.data()) {
+            (
+                Term::Lambda(var_name, var_icit, arg_ty, body),
+                Value::Pi(param_name, param_icit, param_ty, closure),
+            ) if var_icit.either(
+                |icit| icit == *param_icit,
+                |name| name == *param_name && *param_icit == Icit::Impl,
+            ) =>
+            {
+                if let Some(arg_ty) = arg_ty {
+                    let arg_ty =
+                        self.check(arg_ty.clone(), with_span(Value::Universe, arg_ty.span))?;
+                    let arg_ty = self.ctx.env_mut().evaluate(arg_ty, &self.meta)?;
+                    self.unify(arg_ty, param_ty.clone(), Error::LambdaBinderType)?;
+                }
+                let var = with_span(Value::var(self.ctx.level), var_name.span);
+                let applied = closure.apply(var, &self.meta)?;
+                self.with_bind(var_name.clone(), param_ty.clone(), |this| {
+                    let body = this.check(body.clone(), applied)?;
+                    Ok(with_span(
+                        Term::Lambda(var_name.clone(), Left(*param_icit), None, body),
+                        term.span,
+                    ))
+                })
+            }
+            _ => todo!("check"),
+        }
+    }
+
+    fn with_bind<F, R>(&mut self, name: Name, ty: ValuePtr, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self) -> Result<R>,
+    {
+        self.ctx.bind_mut(&self.meta, name, ty)?;
+        f(self)
+            .inspect(|_| {
+                self.ctx.unbind_mut(name);
+            })
+            .inspect_err(|_| {
+                self.ctx.unbind_mut(name);
+            })
     }
 
     fn solve_with_partial_renaming(
