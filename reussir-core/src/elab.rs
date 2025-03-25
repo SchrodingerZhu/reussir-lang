@@ -353,7 +353,7 @@ impl Elaborator {
                     rhs = d.apply(var, &self.meta)?;
                     continue;
                 }
-                (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => self.unify_spine(gamma, s, t),
+                (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => return self.unify_spine(gamma, s, t),
                 (Value::Flex(x, s), Value::Flex(y, t)) => {
                     return deep_recursive(|| {
                         if x == y {
@@ -379,8 +379,9 @@ impl Elaborator {
                 (Value::Lambda(n, i, x), _) => {
                     let rhs_span = rhs.span;
                     let var = with_span(Value::var(gamma), n.span);
+                    let icit = *i;
                     lhs = x.apply(var.clone(), &self.meta)?;
-                    rhs = app_val(rhs, var, *i, &self.meta, rhs_span)?;
+                    rhs = app_val(rhs, var, icit, &self.meta, rhs_span)?;
                     continue;
                 }
                 (Value::Flex(m, sp), _) => {
