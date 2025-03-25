@@ -1,7 +1,8 @@
+use either::Either::Left;
 use rpds::Vector;
 
 use crate::{
-    Result,
+    Error, Result,
     meta::MetaContext,
     term::{Term, TermPtr},
     utils::{Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine, with_span, with_span_as},
@@ -48,35 +49,34 @@ impl Environment {
     }
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         match term.data() {
-            crate::term::Term::Hole => unreachable!("not possible to evaluate hole"),
-            crate::term::Term::NamedApp(..) => unreachable!("not possible to evaluate named app"),
-            crate::term::Term::Var(idx) => Ok(self.get_var(*idx)),
-            crate::term::Term::Lambda(name, icit, body) => {
+            Term::Var(idx) => Ok(self.get_var(*idx)),
+            Term::Lambda(name, Left(icit), None, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
                 Ok(with_span_as(Value::Lambda(*name, *icit, closure), term))
             }
-            crate::term::Term::App(lhs, rhs, icit) => {
+            Term::App(lhs, rhs, Left(icit)) => {
                 let lhs = self.evaluate(lhs.clone(), meta)?;
                 let rhs = self.evaluate(rhs.clone(), meta)?;
                 app_val(lhs, rhs, *icit, meta, term.span)
             }
-            crate::term::Term::AppPruning(term, pruning) => {
+            Term::AppPruning(term, pruning) => {
                 let span = term.span;
                 let term = self.evaluate(term.clone(), meta)?;
                 self.app_pruning(term, pruning, meta, span)
             }
-            crate::term::Term::Universe => Ok(with_span_as(Value::Universe, term)),
-            crate::term::Term::Pi(name, icit, ty, body) => {
+            Term::Universe => Ok(with_span_as(Value::Universe, term)),
+            Term::Pi(name, icit, ty, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
                 let ty = self.evaluate(ty.clone(), meta)?;
                 Ok(with_span_as(Value::Pi(*name, *icit, ty, closure), term))
             }
-            crate::term::Term::Let { term, body, .. } => {
+            Term::Let { term, body, .. } => {
                 let term = self.evaluate(term.clone(), meta)?;
                 self.with_var(term, |env| env.evaluate(body.clone(), meta))
             }
-            crate::term::Term::Meta(m) => Ok(meta.get_meta_value(*m, term.span)),
-            crate::term::Term::Postponed(c) => meta.get_check_value(self, *c, term.span),
+            Term::Meta(m) => Ok(meta.get_meta_value(*m, term.span)),
+            Term::Postponed(c) => meta.get_check_value(self, *c, term.span),
+            _ => Err(Error::SurfaceSyntax(term.clone())),
         }
     }
     pub fn app_pruning(
@@ -144,7 +144,7 @@ fn quote_spine(
 ) -> Result<TermPtr> {
     spine.iter().try_fold(term, |acc, (arg, icit)| {
         let arg = quote(level, arg.clone(), mctx)?;
-        Ok(with_span(Term::App(acc, arg, *icit), span))
+        Ok(with_span(Term::App(acc, arg, Left(*icit)), span))
     })
 }
 
@@ -168,7 +168,7 @@ pub fn quote(level: DBLvl, value: ValuePtr, mctx: &MetaContext) -> Result<TermPt
             let arg = with_span(Value::var(level), name.span);
             let body = closure.apply(arg, mctx)?;
             Ok(with_span_as(
-                Term::Lambda(*name, *icit, quote(level.next(), body, mctx)?),
+                Term::Lambda(*name, Left(*icit), None, quote(level.next(), body, mctx)?),
                 value,
             ))
         }

@@ -1,3 +1,4 @@
+use either::Either::Left;
 use rpds::{HashTrieMap, Vector};
 
 use crate::{
@@ -134,7 +135,9 @@ impl Context {
         self.locals
             .iter()
             .fold(term, |body, (name, kind)| match kind {
-                VarKind::Bound { .. } => with_span(Term::Lambda(*name, Icit::Expl, body), span),
+                VarKind::Bound { .. } => {
+                    with_span(Term::Lambda(*name, Left(Icit::Expl), None, body), span)
+                }
                 VarKind::Defined { term, ty } => with_span(
                     Term::Let {
                         name: *name,

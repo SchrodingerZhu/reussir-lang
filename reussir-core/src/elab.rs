@@ -1,3 +1,4 @@
+use either::Either::Left;
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use thiserror::Error;
 use tracing::{error, trace};
@@ -178,7 +179,7 @@ impl Elaborator {
                     let meta = self.fresh_meta(arg_ty.clone())?;
                     let value = self.ctx.env_mut().evaluate(meta.clone(), &self.meta)?;
                     let span = term.span;
-                    term = with_span(Term::App(term, meta, Icit::Impl), span);
+                    term = with_span(Term::App(term, meta, Left(Icit::Impl)), span);
                     ty = body.apply(value, &self.meta)?;
                     continue;
                 }
@@ -190,7 +191,7 @@ impl Elaborator {
         &mut self,
         (term, ty): (TermPtr, ValuePtr),
     ) -> Result<(TermPtr, ValuePtr)> {
-        if let Term::Lambda(_, Icit::Impl, _) = term.data() {
+        if let Term::Lambda(_, Left(Icit::Impl), _, _) = term.data() {
             Ok((term, ty))
         } else {
             self.apply_all_implicit_args((term, ty))
@@ -353,7 +354,9 @@ impl Elaborator {
                     rhs = d.apply(var, &self.meta)?;
                     continue;
                 }
-                (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => return self.unify_spine(gamma, s, t),
+                (Value::Rigid(x, s), Value::Rigid(y, t)) if x == y => {
+                    return self.unify_spine(gamma, s, t);
+                }
                 (Value::Flex(x, s), Value::Flex(y, t)) => {
                     return deep_recursive(|| {
                         if x == y {
@@ -515,7 +518,10 @@ impl PartialRenaming {
                 let var = with_span(Value::var(self.cod), x.span);
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
-                Ok(with_span(Term::Lambda(x.clone(), *icit, body), value.span))
+                Ok(with_span(
+                    Term::Lambda(x.clone(), Left(*icit), None, body),
+                    value.span,
+                ))
             }
             Value::Pi(x, icit, arg_ty, closure) => {
                 let arg_ty = self.rename(arg_ty.clone(), mctx)?;
@@ -540,7 +546,7 @@ impl PartialRenaming {
         spine.iter().try_fold(term, |acc, (val, icit)| {
             let rhs = self.rename(val.clone(), mctx)?;
             let span = acc.span;
-            Ok(with_span(Term::App(acc, rhs, *icit), span))
+            Ok(with_span(Term::App(acc, rhs, Left(*icit)), span))
         })
     }
 
@@ -598,7 +604,7 @@ impl PartialRenaming {
             .rfold(term, |acc, (val, icit)| {
                 let val = val.clone();
                 let span = acc.span;
-                with_span(Term::App(acc, val, *icit), span)
+                with_span(Term::App(acc, val, Left(*icit)), span)
             }))
     }
 }
@@ -625,8 +631,8 @@ fn stack_lambdas(
             let icit = *icit;
             ty = closure.apply(var, mctx)?;
             let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
-            *cursor = with_span(Term::Lambda(x, icit, hole), term.span);
-            let Term::Lambda(_, _, body) = Rc::make_mut(cursor).data_mut() else {
+            *cursor = with_span(Term::Lambda(x, Left(icit), None, hole), term.span);
+            let Term::Lambda(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
                 unreachable!("expected lambda type");
             };
             cursor = body;

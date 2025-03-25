@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 archery = "1.2.1"
+either = "1.15.0"
 rpds = "1.1.0"
 rustc-hash = { version = "2.1.1", features = ["rand"] }
 smallvec = "1.14.0"

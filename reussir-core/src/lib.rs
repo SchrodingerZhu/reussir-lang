@@ -23,6 +23,8 @@ pub enum Error {
     InvalidUnification(elab::Error),
     #[error("named implicit argument ({}) is not found", .0.data())]
     NamedImplicitNotFound(Name),
+    #[error("surface syntax {0:?} is not evaluable")]
+    SurfaceSyntax(TermPtr),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
