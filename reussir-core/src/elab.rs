@@ -268,24 +268,60 @@ impl Elaborator {
                     ))
                 })
             }
+            (_, Value::Pi(name, Icit::Impl, arg_ty, body)) => {
+                let var = with_span(Value::var(self.ctx.level), name.span);
+                let ty = body.apply(var.clone(), &self.meta)?;
+                self.with_binder(*name, arg_ty.clone(), |this| {
+                    let term = this.check(term.clone(), ty.clone())?;
+                    Ok(with_span(
+                        Term::Lambda(*name, Left(Icit::Impl), None, term),
+                        term_span,
+                    ))
+                })
+            }
             (_, Value::Flex(meta, _)) => {
                 let closed_flex = self.evaluated_close_type(ty.clone(), ty.span)?;
                 let placeholder = self.meta.new_meta(closed_flex, Default::default());
-                let chk = self.meta.new_check(self.ctx.clone(), term, ty.clone(), placeholder);
+                let chk = self
+                    .meta
+                    .new_check(self.ctx.clone(), term, ty.clone(), placeholder);
                 self.meta.add_blocker(chk, *meta);
                 trace!("delayed check {chk:?} for meta {meta:?}");
                 Ok(with_span(Term::Postponed(chk), term_span))
             }
-            (Term::Let{name, ty: var_ty, term, body }, _) => {
+            (
+                Term::Let {
+                    name,
+                    ty: var_ty,
+                    term,
+                    body,
+                },
+                _,
+            ) => {
                 let universe = with_span(Value::Universe, term.span);
                 let var_ty = self.check(var_ty.clone(), universe)?;
                 let var_ty_val = self.ctx.env_mut().evaluate(var_ty.clone(), &self.meta)?;
                 let term = self.check(term.clone(), var_ty_val.clone())?;
                 let term_val = self.ctx.env_mut().evaluate(term.clone(), &self.meta)?;
-                self.with_def(name.clone(), term.clone(), term_val, var_ty.clone(), var_ty_val, |this| {
-                    let body = this.check(body.clone(), ty)?;
-                    Ok(with_span(Term::Let { name: name.clone(), ty: var_ty, term, body }, term_span))
-                })
+                self.with_def(
+                    name.clone(),
+                    term.clone(),
+                    term_val,
+                    var_ty.clone(),
+                    var_ty_val,
+                    |this| {
+                        let body = this.check(body.clone(), ty)?;
+                        Ok(with_span(
+                            Term::Let {
+                                name: name.clone(),
+                                ty: var_ty,
+                                term,
+                                body,
+                            },
+                            term_span,
+                        ))
+                    },
+                )
             }
             (Term::Hole, _) => self.fresh_meta(ty),
             _ => {
@@ -293,7 +329,7 @@ impl Elaborator {
                 let (res, inferred) = self.apply_implicit_if_neutral(inferred)?;
                 self.unify(ty, inferred, Error::ExpectedInferredMismatch)?;
                 Ok(res)
-            },
+            }
         }
     }
 
@@ -311,7 +347,29 @@ impl Elaborator {
             })
     }
 
-    fn with_def<F, R>(&mut self, name: Name, term: TermPtr, value: ValuePtr, ty: TermPtr, ty_val: ValuePtr, f: F) -> Result<R>
+    fn with_binder<F, R>(&mut self, name: Name, ty: ValuePtr, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self) -> Result<R>,
+    {
+        self.ctx.binder_mut(&self.meta, name, ty)?;
+        f(self)
+            .inspect(|_| {
+                self.ctx.unbinder_mut();
+            })
+            .inspect_err(|_| {
+                self.ctx.unbinder_mut();
+            })
+    }
+
+    fn with_def<F, R>(
+        &mut self,
+        name: Name,
+        term: TermPtr,
+        value: ValuePtr,
+        ty: TermPtr,
+        ty_val: ValuePtr,
+        f: F,
+    ) -> Result<R>
     where
         F: FnOnce(&mut Self) -> Result<R>,
     {
