@@ -119,7 +119,7 @@ impl Context {
             .iter()
             .fold(term, |body, (name, kind)| match kind {
                 VarKind::Bound { .. } => {
-                    with_span(Term::Lambda(*name, Left(Icit::Expl), None, body), span)
+                    with_span(Term::Lambda(*name, Icit::Expl, body), span)
                 }
                 VarKind::Defined { term, ty } => with_span(
                     Term::Let {

@@ -13,6 +13,8 @@ pub mod term;
 pub mod utils;
 pub mod value;
 
+pub mod surf;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("failed to unify {0:?} with {1:?} ({2})")]

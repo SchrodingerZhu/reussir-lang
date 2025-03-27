@@ -50,11 +50,11 @@ impl Environment {
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         match term.data() {
             Term::Var(idx) => Ok(self.get_var(*idx)),
-            Term::Lambda(name, Left(icit), None, body) => {
+            Term::Lambda(name, icit, body) => {
                 let closure = Closure::new(self.clone(), body.clone());
                 Ok(with_span_as(Value::Lambda(*name, *icit, closure), term))
             }
-            Term::App(lhs, rhs, Left(icit)) => {
+            Term::App(lhs, rhs, icit) => {
                 let lhs = self.evaluate(lhs.clone(), meta)?;
                 let rhs = self.evaluate(rhs.clone(), meta)?;
                 app_val(lhs, rhs, *icit, meta, term.span)
@@ -144,7 +144,7 @@ fn quote_spine(
 ) -> Result<TermPtr> {
     spine.iter().try_fold(term, |acc, (arg, icit)| {
         let arg = quote(level, arg.clone(), mctx)?;
-        Ok(with_span(Term::App(acc, arg, Left(*icit)), span))
+        Ok(with_span(Term::App(acc, arg, *icit), span))
     })
 }
 
@@ -168,7 +168,7 @@ pub fn quote(level: DBLvl, value: ValuePtr, mctx: &MetaContext) -> Result<TermPt
             let arg = with_span(Value::var(level), name.span);
             let body = closure.apply(arg, mctx)?;
             Ok(with_span_as(
-                Term::Lambda(*name, Left(*icit), None, quote(level.next(), body, mctx)?),
+                Term::Lambda(*name, *icit, quote(level.next(), body, mctx)?),
                 value,
             ))
         }

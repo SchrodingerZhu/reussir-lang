@@ -10,6 +10,7 @@ use crate::{
     utils::{Span, with_span},
     value::{Value, ValuePtr},
 };
+use crate::surf::SurfPtr;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -24,7 +25,7 @@ pub enum CheckEntry {
     Checked(TermPtr),
     Unchecked {
         ctx: Context,
-        term: TermPtr,
+        term: SurfPtr,
         ty: ValuePtr,
         meta: MetaVar,
     },
@@ -59,7 +60,7 @@ impl MetaContext {
     pub fn new_check(
         &mut self,
         ctx: Context,
-        term: TermPtr,
+        term: SurfPtr,
         ty: ValuePtr,
         meta: MetaVar,
     ) -> CheckVar {

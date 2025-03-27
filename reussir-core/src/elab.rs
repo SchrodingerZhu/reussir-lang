@@ -15,12 +15,12 @@ use crate::{
 };
 
 use crate::eval::app_val;
-use rpds::Vector;
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
 use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
+use crate::surf::{SurfPtr, Surface};
 
 thread_local! {
-    static TERM_PLACEHOLDER: TermPtr = with_span(Term::Hole, Span::default());
+    static TERM_PLACEHOLDER: TermPtr = with_span(Term::Universe, Span::default());
 }
 
 #[derive(Debug, Clone, Copy, Error)]
@@ -179,7 +179,7 @@ impl Elaborator {
                     let meta = self.fresh_meta(arg_ty.clone())?;
                     let value = self.ctx.env_mut().evaluate(meta.clone(), &self.meta)?;
                     let span = term.span;
-                    term = with_span(Term::App(term, meta, Left(Icit::Impl)), span);
+                    term = with_span(Term::App(term, meta, Icit::Impl), span);
                     ty = body.apply(value, &self.meta)?;
                     continue;
                 }
@@ -191,7 +191,7 @@ impl Elaborator {
         &mut self,
         (term, ty): (TermPtr, ValuePtr),
     ) -> Result<(TermPtr, ValuePtr)> {
-        if let Term::Lambda(_, Left(Icit::Impl), _, _) = term.data() {
+        if let Term::Lambda(_, Icit::Impl, _) = term.data() {
             Ok((term, ty))
         } else {
             self.apply_all_implicit_args((term, ty))
@@ -212,7 +212,7 @@ impl Elaborator {
                     let meta = self.fresh_meta(arg_ty.clone())?;
                     let value = self.ctx.env_mut().evaluate(meta.clone(), &self.meta)?;
                     let span = term.span;
-                    term = with_span(Term::App(term, meta, Left(Icit::Impl)), span);
+                    term = with_span(Term::App(term, meta, Icit::Impl), span);
                     ty = body.apply(value, &self.meta)?;
                     continue;
                 }
@@ -232,10 +232,10 @@ impl Elaborator {
             })
             .map_err(|e| e.unwrap_or_else(identity))
     }
-    pub fn infer(&mut self, term: TermPtr) -> Result<(TermPtr, ValuePtr)> {
+    pub fn infer(&mut self, term: SurfPtr) -> Result<(TermPtr, ValuePtr)> {
         todo!("infer")
     }
-    pub fn check(&mut self, term: TermPtr, ty: ValuePtr) -> Result<TermPtr> {
+    pub fn check(&mut self, term: SurfPtr, ty: ValuePtr) -> Result<TermPtr> {
         trace!(
             "checking term {:?} against type {:?}",
             term,
@@ -245,7 +245,7 @@ impl Elaborator {
         let ty = self.meta.force(ty)?;
         match (term.data(), ty.data()) {
             (
-                Term::Lambda(var_name, var_icit, arg_ty, body),
+                Surface::Lambda(var_name, var_icit, arg_ty, body),
                 Value::Pi(param_name, param_icit, param_ty, closure),
             ) if var_icit.either(
                 |icit| icit == *param_icit,
@@ -263,7 +263,7 @@ impl Elaborator {
                 self.with_bind(var_name.clone(), param_ty.clone(), |this| {
                     let body = this.check(body.clone(), applied)?;
                     Ok(with_span(
-                        Term::Lambda(var_name.clone(), Left(*param_icit), None, body),
+                        Term::Lambda(var_name.clone(), *param_icit, body),
                         term.span,
                     ))
                 })
@@ -274,7 +274,7 @@ impl Elaborator {
                 self.with_binder(*name, arg_ty.clone(), |this| {
                     let term = this.check(term.clone(), ty.clone())?;
                     Ok(with_span(
-                        Term::Lambda(*name, Left(Icit::Impl), None, term),
+                        Term::Lambda(*name, Icit::Impl, term),
                         term_span,
                     ))
                 })
@@ -290,7 +290,7 @@ impl Elaborator {
                 Ok(with_span(Term::Postponed(chk), term_span))
             }
             (
-                Term::Let {
+                Surface::Let {
                     name,
                     ty: var_ty,
                     term,
@@ -323,7 +323,7 @@ impl Elaborator {
                     },
                 )
             }
-            (Term::Hole, _) => self.fresh_meta(ty),
+            (Surface::Hole, _) => self.fresh_meta(ty),
             _ => {
                 let inferred = self.infer(term.clone())?;
                 let (res, inferred) = self.apply_implicit_if_neutral(inferred)?;
@@ -689,7 +689,7 @@ impl PartialRenaming {
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
                 Ok(with_span(
-                    Term::Lambda(x.clone(), Left(*icit), None, body),
+                    Term::Lambda(x.clone(), *icit, body),
                     value.span,
                 ))
             }
@@ -716,7 +716,7 @@ impl PartialRenaming {
         spine.iter().try_fold(term, |acc, (val, icit)| {
             let rhs = self.rename(val.clone(), mctx)?;
             let span = acc.span;
-            Ok(with_span(Term::App(acc, rhs, Left(*icit)), span))
+            Ok(with_span(Term::App(acc, rhs, *icit), span))
         })
     }
 
@@ -774,7 +774,7 @@ impl PartialRenaming {
             .rfold(term, |acc, (val, icit)| {
                 let val = val.clone();
                 let span = acc.span;
-                with_span(Term::App(acc, val, Left(*icit)), span)
+                with_span(Term::App(acc, val, *icit), span)
             }))
     }
 }
@@ -801,8 +801,8 @@ fn stack_lambdas(
             let icit = *icit;
             ty = closure.apply(var, mctx)?;
             let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
-            *cursor = with_span(Term::Lambda(x, Left(icit), None, hole), term.span);
-            let Term::Lambda(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
+            *cursor = with_span(Term::Lambda(x, icit, hole), term.span);
+            let Term::Lambda(_, _, body) = Rc::make_mut(cursor).data_mut() else {
                 unreachable!("expected lambda type");
             };
             cursor = body;

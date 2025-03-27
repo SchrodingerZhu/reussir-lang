@@ -11,10 +11,9 @@ pub type TermPtr = Rc<WithSpan<Term>>;
 
 #[derive(Debug, Clone)]
 pub enum Term {
-    Hole,
     Var(DBIdx),
-    Lambda(Name, Either<Icit, Name>, Option<TermPtr>, TermPtr),
-    App(TermPtr, TermPtr, Either<Icit, Name>),
+    Lambda(Name, Icit, TermPtr),
+    App(TermPtr, TermPtr, Icit),
     AppPruning(TermPtr, Pruning),
     Universe,
     Pi(Name, Icit, TermPtr, TermPtr),
