@@ -1,4 +1,3 @@
-use either::Either::Left;
 use rpds::Vector;
 
 use crate::{

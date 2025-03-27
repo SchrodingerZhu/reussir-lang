@@ -1,4 +1,3 @@
-use either::Either::Left;
 use rpds::{HashTrieMap, Vector};
 
 use crate::{

@@ -2,10 +2,7 @@ use std::rc::Rc;
 
 use either::Either;
 
-use crate::{
-    meta::{CheckVar, MetaVar},
-    utils::{Icit, Name, Pruning, WithSpan},
-};
+use crate::utils::{Icit, Name, Pruning, WithSpan};
 
 pub type SurfPtr = Rc<WithSpan<Surface>>;
 

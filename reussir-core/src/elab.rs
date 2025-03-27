@@ -1,7 +1,6 @@
-use either::Either::Left;
 use rustc_hash::{FxHashMapRand, FxHashSetRand};
 use thiserror::Error;
-use tracing::{error, span, trace};
+use tracing::{error, trace};
 use ustr::Ustr;
 
 use crate::{
@@ -11,13 +10,14 @@ use crate::{
     meta::{CheckEntry, CheckVar, MetaContext, MetaEntry, MetaVar},
     term::{Term, TermPtr},
     utils::{DBLvl, Icit, Name, Pruning, Span, Spine, WithSpan, with_span},
-    value::{self, Value, ValuePtr},
+    value::{Value, ValuePtr},
 };
 
 use crate::eval::app_val;
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
 use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
 use crate::surf::{SurfPtr, Surface};
+use crate::utils::deep_recursive;
 
 thread_local! {
     static TERM_PLACEHOLDER: TermPtr = with_span(Term::Universe, Span::default());
@@ -260,10 +260,10 @@ impl Elaborator {
                 }
                 let var = with_span(Value::var(self.ctx.level), var_name.span);
                 let applied = closure.apply(var, &self.meta)?;
-                self.with_bind(var_name.clone(), param_ty.clone(), |this| {
+                self.with_bind(*var_name, param_ty.clone(), |this| {
                     let body = this.check(body.clone(), applied)?;
                     Ok(with_span(
-                        Term::Lambda(var_name.clone(), *param_icit, body),
+                        Term::Lambda(*var_name, *param_icit, body),
                         term.span,
                     ))
                 })
@@ -304,7 +304,7 @@ impl Elaborator {
                 let term = self.check(term.clone(), var_ty_val.clone())?;
                 let term_val = self.ctx.env_mut().evaluate(term.clone(), &self.meta)?;
                 self.with_def(
-                    name.clone(),
+                    *name,
                     term.clone(),
                     term_val,
                     var_ty.clone(),
@@ -313,7 +313,7 @@ impl Elaborator {
                         let body = this.check(body.clone(), ty)?;
                         Ok(with_span(
                             Term::Let {
-                                name: name.clone(),
+                                name: *name,
                                 ty: var_ty,
                                 term,
                                 body,
@@ -506,7 +506,7 @@ impl Elaborator {
         }
     }
 
-    fn unify_impl(&mut self, mut gamma: DBLvl, mut lhs: ValuePtr, mut rhs: ValuePtr) -> Result<()> {
+    fn unify_impl(&mut self, gamma: DBLvl, mut lhs: ValuePtr, mut rhs: ValuePtr) -> Result<()> {
         loop {
             trace!(
                 "unifying {:?} with {:?}",
@@ -571,10 +571,6 @@ impl Elaborator {
             }
         }
     }
-}
-
-fn deep_recursive<R>(f: impl FnOnce() -> R) -> R {
-    stacker::maybe_grow(32 * 1024, 1024 * 1024, || f())
 }
 
 #[derive(Default)]
@@ -689,7 +685,7 @@ impl PartialRenaming {
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
                 Ok(with_span(
-                    Term::Lambda(x.clone(), *icit, body),
+                    Term::Lambda(*x, *icit, body),
                     value.span,
                 ))
             }
@@ -699,7 +695,7 @@ impl PartialRenaming {
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
                 Ok(with_span(
-                    Term::Pi(x.clone(), *icit, arg_ty, body),
+                    Term::Pi(*x, *icit, arg_ty, body),
                     value.span,
                 ))
             }
@@ -795,7 +791,7 @@ fn stack_lambdas(
             let x = if x.is_anon() {
                 WithSpan::new(Ustr::from(&format!("α{}", current.0)), x.span)
             } else {
-                x.clone()
+                *x
             };
             let var = with_span(Value::var(current), x.span);
             let icit = *icit;
@@ -833,7 +829,7 @@ fn prune_type<'a>(
         if mask.is_none() {
             let arg_ty = renaming.rename(arg_ty.clone(), mctx)?;
             let hole = TERM_PLACEHOLDER.with(|hole| hole.clone());
-            *cursor = with_span(Term::Pi(x.clone(), *icit, arg_ty, hole), ty.span);
+            *cursor = with_span(Term::Pi(*x, *icit, arg_ty, hole), ty.span);
             let Term::Pi(_, _, _, body) = Rc::make_mut(cursor).data_mut() else {
                 unreachable!("expected pi type");
             };

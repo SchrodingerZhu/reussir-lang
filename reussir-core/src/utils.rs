@@ -151,3 +151,7 @@ impl Closure {
         env.with_var(arg, |env| env.evaluate(self.body.clone(), meta))
     }
 }
+
+pub fn deep_recursive<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(32 * 1024, 1024 * 1024, f)
+}

@@ -1,7 +1,5 @@
 use std::rc::Rc;
 
-use either::Either;
-
 use crate::{
     meta::{CheckVar, MetaVar},
     utils::{DBIdx, Icit, Name, Pruning, WithSpan},
