@@ -1,5 +1,6 @@
 use rpds::{HashTrieMap, Vector};
 
+use crate::utils::Closure;
 use crate::{
     Result,
     eval::{Environment, quote},
@@ -8,6 +9,7 @@ use crate::{
     utils::{DBLvl, Icit, Name, Pruning, Span, with_span},
     value::{Value, ValuePtr},
 };
+
 #[derive(Debug, Clone)]
 pub struct Context {
     env: Environment,
@@ -149,6 +151,11 @@ impl Context {
     }
     pub fn lookup(&self, name: Name) -> Option<&(DBLvl, ValuePtr)> {
         self.name_types.get(&name)
+    }
+    pub fn val_to_closure(&self, val: ValuePtr, meta: &MetaContext) -> Result<Closure> {
+        let env = self.env.clone();
+        let term = quote(self.level.next(), val, meta)?;
+        Ok(Closure::new(env, term))
     }
 }
 

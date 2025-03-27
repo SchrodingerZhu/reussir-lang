@@ -15,10 +15,10 @@ use crate::{
 
 use crate::eval::app_val;
 use crate::surf::{SurfPtr, Surface};
-use crate::utils::{deep_recursive, Closure};
+use crate::utils::{Closure, deep_recursive};
+use either::{Left, Right};
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
 use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
-use thiserror::__private::Var;
 
 thread_local! {
     static TERM_PLACEHOLDER: TermPtr = with_span(Term::Universe, Span::default());
@@ -234,7 +234,98 @@ impl Elaborator {
             .map_err(|e| e.unwrap_or_else(identity))
     }
     pub fn infer(&mut self, term: SurfPtr) -> Result<(TermPtr, ValuePtr)> {
-        todo!("infer")
+        trace!("inferring type of term {:?}", term);
+        let (term, ty) = match term.data() {
+            Surface::Var(name) => {
+                let (lvl, ty) = self
+                    .ctx
+                    .lookup(*name)
+                    .ok_or_else(|| crate::Error::UnboundVariable(*name))?;
+                let term = with_span(Term::Var(lvl.to_index(self.ctx.level)), term.span);
+                (term, ty.clone())
+            }
+            Surface::Lambda(name, Left(icit), ann, body) => {
+                let arg_ty = match ann {
+                    Some(ann) => self.check(ann.clone(), with_span(Value::Universe, ann.span))?,
+                    None => self.fresh_meta(with_span(Value::Universe, term.span))?,
+                };
+                let arg_ty = self.ctx.env_mut().evaluate(arg_ty, &self.meta)?;
+                let (term, ty) = self.with_bind(*name, arg_ty.clone(), |this| {
+                    let inferred = this.infer(body.clone())?;
+                    this.apply_implicit_if_neutral(inferred)
+                })?;
+                let span = term.span;
+                let term = with_span(Term::Lambda(*name, *icit, term), span);
+                let ty = with_span(
+                    Value::Pi(
+                        *name,
+                        *icit,
+                        arg_ty,
+                        self.ctx.val_to_closure(ty, &self.meta)?,
+                    ),
+                    term.span,
+                );
+                (term, ty)
+            }
+            Surface::Lambda(_, Right(_), _, _) => {
+                return Err(crate::Error::InferredNameLambda);
+            }
+            Surface::App(lhs, rhs, icit_or_name) => {
+                let icit;
+                let (lhs, lhs_ty) = match icit_or_name {
+                    Right(name) => {
+                        icit = Icit::Impl;
+                        let inferred = self.infer(lhs.clone())?;
+                        self.apply_implicit_until_name(*name, inferred)?
+                    }
+                    Left(Icit::Impl) => {
+                        icit = Icit::Impl;
+                        self.infer(lhs.clone())?
+                    }
+                    Left(Icit::Expl) => {
+                        icit = Icit::Expl;
+                        let inferred = self.infer(lhs.clone())?;
+                        self.apply_all_implicit_args(inferred)?
+                    }
+                };
+                let lhs_ty = self.meta.force(lhs_ty)?;
+                let (rhs_ty, closure) = if let Value::Pi(_, i, a, b) = lhs_ty.data() {
+                    if icit != *i {
+                        return Err(crate::Error::IcitMismatch(icit, *i));
+                    }
+                    (a.clone(), b.clone())
+                } else {
+                    let rhs_ty = self.fresh_meta(with_span(Value::Universe, rhs.span))?;
+                    let rhs_ty = self.ctx.env_mut().evaluate(rhs_ty, &self.meta)?;
+                    let name = WithSpan::new(Ustr::from("?x"), rhs_ty.span);
+                    let rhs_ty_span = rhs_ty.span;
+                    let meta = self.with_bind(name, rhs_ty.clone(), |this| {
+                        this.fresh_meta(with_span(Value::Universe, rhs_ty_span))
+                    })?;
+                    let closure = Closure::new(Environment::new(), meta.clone());
+                    let virtual_pi = with_span(
+                        Value::Pi(name, icit, rhs_ty.clone(), closure.clone()),
+                        lhs_ty.span,
+                    );
+                    self.unify(virtual_pi, lhs_ty, Error::ExpectedInferredMismatch)?;
+                    (rhs_ty, closure)
+                };
+                let rhs = self.check(rhs.clone(), rhs_ty)?;
+                let term = with_span(Term::App(lhs, rhs.clone(), icit), term.span);
+                let rhs = self.ctx.env_mut().evaluate(rhs, &self.meta)?;
+                let ty = closure.apply(rhs, &self.meta)?;
+                (term, ty)
+            }
+            Surface::Universe => {
+                let term = with_span(Term::Universe, term.span);
+                let ty = with_span(Value::Universe, term.span);
+                (term, ty)
+            }
+            _ => todo!("infer type of term {:?}", term),
+        };
+
+        trace!("inferred type of term {:?} as {:?}", term, ty);
+        Ok((term, ty))
     }
     pub fn check(&mut self, term: SurfPtr, ty: ValuePtr) -> Result<TermPtr> {
         trace!(
@@ -244,14 +335,15 @@ impl Elaborator {
         );
         let term_span = term.span;
         let ty = self.meta.force(ty)?;
-        let check_on_pi = |this: &mut Elaborator, term: SurfPtr, body: &Closure, name: Name, arg_ty: ValuePtr| {
-            let var = with_span(Value::var(this.ctx.level), name.span);
-            let ty = body.apply(var.clone(), &this.meta)?;
-            this.with_binder(name, arg_ty.clone(), |this| {
-                let term = this.check(term, ty.clone())?;
-                Ok(with_span(Term::Lambda(name, Icit::Impl, term), term_span))
-            })
-        };
+        let check_on_pi =
+            |this: &mut Elaborator, term: SurfPtr, body: &Closure, name: Name, arg_ty: ValuePtr| {
+                let var = with_span(Value::var(this.ctx.level), name.span);
+                let ty = body.apply(var.clone(), &this.meta)?;
+                this.with_binder(name, arg_ty.clone(), |this| {
+                    let term = this.check(term, ty.clone())?;
+                    Ok(with_span(Term::Lambda(name, Icit::Impl, term), term_span))
+                })
+            };
         match (term.data(), ty.data()) {
             (
                 Surface::Lambda(var_name, var_icit, arg_ty, body),
@@ -282,9 +374,12 @@ impl Elaborator {
                     let val = self.meta.force(val.clone())?;
                     if matches!(val.data(), Value::Flex(..)) {
                         self.unify_impl(lvl, val, ty)?;
-                        return Ok(with_span(Term::Var(lvl.to_index(self.ctx.level)), term_span));
+                        return Ok(with_span(
+                            Term::Var(lvl.to_index(self.ctx.level)),
+                            term_span,
+                        ));
                     }
-                } 
+                }
                 check_on_pi(self, term, body, *name, arg_ty.clone())
             }
             (_, Value::Pi(name, Icit::Impl, arg_ty, body)) => {

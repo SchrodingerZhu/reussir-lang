@@ -27,6 +27,10 @@ pub enum Error {
     NamedImplicitNotFound(Name),
     #[error("surface syntax {0:?} is not evaluable")]
     SurfaceSyntax(TermPtr),
+    #[error("unbound variable {}", .0.data())]
+    UnboundVariable(Name),
+    #[error("inferred name lambda is not supported")]
+    InferredNameLambda,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
