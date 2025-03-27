@@ -117,9 +117,7 @@ impl Context {
         self.locals
             .iter()
             .fold(term, |body, (name, kind)| match kind {
-                VarKind::Bound { .. } => {
-                    with_span(Term::Lambda(*name, Icit::Expl, body), span)
-                }
+                VarKind::Bound { .. } => with_span(Term::Lambda(*name, Icit::Expl, body), span),
                 VarKind::Defined { term, ty } => with_span(
                     Term::Let {
                         name: *name,
@@ -148,6 +146,9 @@ impl Context {
                     span,
                 ),
             })
+    }
+    pub fn lookup(&self, name: Name) -> Option<&(DBLvl, ValuePtr)> {
+        self.name_types.get(&name)
     }
 }
 

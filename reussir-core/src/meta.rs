@@ -2,6 +2,7 @@ use archery::RcK;
 use rpds::HashTrieSet;
 use rustc_hash::FxRandomState;
 
+use crate::surf::SurfPtr;
 use crate::{
     Result,
     ctx::Context,
@@ -10,7 +11,6 @@ use crate::{
     utils::{Span, with_span},
     value::{Value, ValuePtr},
 };
-use crate::surf::SurfPtr;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

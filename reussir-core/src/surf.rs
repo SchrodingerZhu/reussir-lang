@@ -20,5 +20,5 @@ pub enum Surface {
         ty: SurfPtr,
         term: SurfPtr,
         body: SurfPtr,
-    }
+    },
 }

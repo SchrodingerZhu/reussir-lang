@@ -14,10 +14,11 @@ use crate::{
 };
 
 use crate::eval::app_val;
+use crate::surf::{SurfPtr, Surface};
+use crate::utils::{deep_recursive, Closure};
 use std::{collections::hash_map::Entry as HMapEntry, rc::Rc};
 use std::{collections::hash_set::Entry as HSetEntry, convert::identity};
-use crate::surf::{SurfPtr, Surface};
-use crate::utils::deep_recursive;
+use thiserror::__private::Var;
 
 thread_local! {
     static TERM_PLACEHOLDER: TermPtr = with_span(Term::Universe, Span::default());
@@ -243,6 +244,14 @@ impl Elaborator {
         );
         let term_span = term.span;
         let ty = self.meta.force(ty)?;
+        let check_on_pi = |this: &mut Elaborator, term: SurfPtr, body: &Closure, name: Name, arg_ty: ValuePtr| {
+            let var = with_span(Value::var(this.ctx.level), name.span);
+            let ty = body.apply(var.clone(), &this.meta)?;
+            this.with_binder(name, arg_ty.clone(), |this| {
+                let term = this.check(term, ty.clone())?;
+                Ok(with_span(Term::Lambda(name, Icit::Impl, term), term_span))
+            })
+        };
         match (term.data(), ty.data()) {
             (
                 Surface::Lambda(var_name, var_icit, arg_ty, body),
@@ -268,16 +277,18 @@ impl Elaborator {
                     ))
                 })
             }
+            (Surface::Var(x), Value::Pi(name, Icit::Impl, arg_ty, body)) => {
+                if let Some((lvl, val)) = self.ctx.lookup(*x).cloned() {
+                    let val = self.meta.force(val.clone())?;
+                    if matches!(val.data(), Value::Flex(..)) {
+                        self.unify_impl(lvl, val, ty)?;
+                        return Ok(with_span(Term::Var(lvl.to_index(self.ctx.level)), term_span));
+                    }
+                } 
+                check_on_pi(self, term, body, *name, arg_ty.clone())
+            }
             (_, Value::Pi(name, Icit::Impl, arg_ty, body)) => {
-                let var = with_span(Value::var(self.ctx.level), name.span);
-                let ty = body.apply(var.clone(), &self.meta)?;
-                self.with_binder(*name, arg_ty.clone(), |this| {
-                    let term = this.check(term.clone(), ty.clone())?;
-                    Ok(with_span(
-                        Term::Lambda(*name, Icit::Impl, term),
-                        term_span,
-                    ))
-                })
+                check_on_pi(self, term, body, *name, arg_ty.clone())
             }
             (_, Value::Flex(meta, _)) => {
                 let closed_flex = self.evaluated_close_type(ty.clone(), ty.span)?;
@@ -684,20 +695,14 @@ impl PartialRenaming {
                 let var = with_span(Value::var(self.cod), x.span);
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
-                Ok(with_span(
-                    Term::Lambda(*x, *icit, body),
-                    value.span,
-                ))
+                Ok(with_span(Term::Lambda(*x, *icit, body), value.span))
             }
             Value::Pi(x, icit, arg_ty, closure) => {
                 let arg_ty = self.rename(arg_ty.clone(), mctx)?;
                 let var = with_span(Value::var(self.cod), x.span);
                 let body = closure.apply(var, mctx)?;
                 let body = self.lift(|this| this.rename(body, mctx))?;
-                Ok(with_span(
-                    Term::Pi(*x, *icit, arg_ty, body),
-                    value.span,
-                ))
+                Ok(with_span(Term::Pi(*x, *icit, arg_ty, body), value.span))
             }
             Value::Universe => Ok(with_span(Term::Universe, value.span)),
         }
