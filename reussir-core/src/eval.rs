@@ -1,7 +1,7 @@
 use rpds::Vector;
 
 use crate::{
-    Error, Result,
+    Result,
     meta::MetaContext,
     term::{Term, TermPtr},
     utils::{Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine, with_span, with_span_as},
@@ -75,7 +75,6 @@ impl Environment {
             }
             Term::Meta(m) => Ok(meta.get_meta_value(*m, term.span)),
             Term::Postponed(c) => meta.get_check_value(self, *c, term.span),
-            _ => Err(Error::SurfaceSyntax(term.clone())),
         }
     }
     pub fn app_pruning(

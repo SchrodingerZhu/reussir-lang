@@ -321,6 +321,50 @@ impl Elaborator {
                 let ty = with_span(Value::Universe, term.span);
                 (term, ty)
             }
+            Surface::Pi(name, icit, arg_ty, body) => {
+                let arg_ty = self.check(arg_ty.clone(), with_span(Value::Universe, arg_ty.span))?;
+                let arg_ty_val = self.ctx.env_mut().evaluate(arg_ty.clone(), &self.meta)?;
+                let universe = with_span(Value::Universe, term.span);
+                let body = self.with_bind(*name, arg_ty_val.clone(), |this| {
+                    this.check(body.clone(), universe.clone())
+                })?;
+                let pi_term = with_span(Term::Pi(*name, *icit, arg_ty, body), term.span);
+                (pi_term, universe)
+            }
+            Surface::Let {
+                name,
+                ty,
+                term,
+                body,
+            } => {
+                let span = term.span;
+                let universe = with_span(Value::Universe, span);
+                let ty = self.check(ty.clone(), universe.clone())?;
+                let ty_val = self.ctx.env_mut().evaluate(ty.clone(), &self.meta)?;
+                let term = self.check(term.clone(), ty_val.clone())?;
+                let term_val = self.ctx.env_mut().evaluate(term.clone(), &self.meta)?;
+                let (body, expr_ty) =
+                    self.with_def(*name, term.clone(), term_val, ty.clone(), ty_val, |this| {
+                        this.infer(body.clone())
+                    })?;
+                let term = with_span(
+                    Term::Let {
+                        name: *name,
+                        ty,
+                        term,
+                        body,
+                    },
+                    span,
+                );
+                (term, expr_ty)
+            }
+            Surface::Hole => {
+                let universe = with_span(Value::Universe, term.span);
+                let meta = self.fresh_meta(universe)?;
+                let meta = self.ctx.env_mut().evaluate(meta, &self.meta)?;
+                let term = self.fresh_meta(meta.clone())?;
+                (term, meta)
+            }
             _ => todo!("infer type of term {:?}", term),
         };
 
@@ -512,8 +556,8 @@ impl Elaborator {
 
         renaming.with_occ(meta, |renaming| {
             let rhs = renaming.rename(value, &mut self.meta)?;
-            let rhs = stack_lambdas(renaming.dom, ty.clone(), rhs, &mut self.meta)?;
-            let solution = Environment::new().evaluate(rhs, &mut self.meta)?;
+            let rhs = stack_lambdas(renaming.dom, ty.clone(), rhs, &self.meta)?;
+            let solution = Environment::new().evaluate(rhs, &self.meta)?;
             self.meta
                 .set_meta(meta, MetaEntry::Solved { val: solution, ty });
 
@@ -623,7 +667,7 @@ impl Elaborator {
             rhs = self.meta.force(rhs)?;
             match (lhs.data(), rhs.data()) {
                 (Value::Universe, Value::Universe) => return Ok(()),
-                (Value::Pi(x, i, a, b), Value::Pi(y, j, c, d)) if i == j => {
+                (Value::Pi(x, i, a, b), Value::Pi(_, j, c, d)) if i == j => {
                     deep_recursive(|| self.unify_impl(gamma, a.clone(), c.clone()))?;
                     let var = with_span(Value::var(gamma), x.span);
                     lhs = b.apply(var.clone(), &self.meta)?;
@@ -911,7 +955,7 @@ fn stack_lambdas(
     Ok(result)
 }
 
-fn prune_type<'a>(
+fn prune_type(
     mut pruning: impl Iterator<Item = Option<Icit>>,
     mut ty: ValuePtr,
     mctx: &mut MetaContext,
@@ -944,7 +988,7 @@ fn prune_type<'a>(
     Ok(result)
 }
 
-fn prune_meta<'a, I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Result<MetaVar>
+fn prune_meta<I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Result<MetaVar>
 where
     I: Iterator<Item = Option<Icit>> + Clone + ExactSizeIterator + DoubleEndedIterator,
 {
