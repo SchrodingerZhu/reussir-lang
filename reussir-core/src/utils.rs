@@ -3,7 +3,7 @@ use std::{
     ops::Deref,
     rc::{Rc, UniqueRc},
 };
-
+use std::fmt::Display;
 use rpds::Vector;
 use ustr::Ustr;
 
@@ -154,4 +154,18 @@ impl Closure {
 
 pub fn deep_recursive<R>(f: impl FnOnce() -> R) -> R {
     stacker::maybe_grow(32 * 1024, 1024 * 1024, f)
+}
+
+impl Display for DBLvl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const ENG_LETTER : &'static str = "abcdefghijklmnopqrstuvwxyz";
+        const GREEK_LETTER: &'static str = "αβγδεζηθικλμνξοπρστυφχψως";
+        if self.0 < ENG_LETTER.len() {
+            write!(f, "{}", ENG_LETTER.chars().nth(self.0).unwrap())
+        } else if self.0 < ENG_LETTER.len() + GREEK_LETTER.len() {
+            write!(f, "{}", GREEK_LETTER.chars().nth(self.0 - ENG_LETTER.len()).unwrap())
+        } else {
+            write!(f, "${}", self.0)
+        }
+    }
 }
