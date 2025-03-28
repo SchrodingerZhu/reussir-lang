@@ -1,5 +1,3 @@
-use rpds::Vector;
-
 use crate::{
     Result,
     meta::MetaContext,
@@ -7,6 +5,8 @@ use crate::{
     utils::{Closure, DBIdx, DBLvl, Icit, Pruning, Span, Spine, with_span, with_span_as},
     value::{Value, ValuePtr},
 };
+use rpds::Vector;
+use tracing::trace;
 
 #[derive(Clone, Debug)]
 pub struct Environment(Vector<ValuePtr>);
@@ -40,6 +40,12 @@ impl Environment {
         Self(self.0.push_back(value))
     }
     pub fn get_var(&self, idx: DBIdx) -> ValuePtr {
+        assert!(
+            idx.0 < self.0.len(),
+            "Variable index {} out of bounds ({} in env)",
+            idx.0,
+            self.0.len()
+        );
         let level = idx.to_level(self.0.len());
         self.0
             .get(level.0)

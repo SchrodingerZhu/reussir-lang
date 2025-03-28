@@ -164,7 +164,7 @@ impl Elaborator {
         let span = ty.span;
         let closed_ty = self.evaluated_close_type(ty, span)?;
         let mvar = self.meta.new_meta(closed_ty, Default::default());
-        trace!("introduced new meta variable {mvar:?}");
+        trace!("introduced new meta variable ?{}", mvar.0);
         let mvar = with_span(Term::Meta(mvar), span);
         let term = Term::AppPruning(mvar, self.ctx.pruning.clone());
         Ok(with_span(term, span))
@@ -234,7 +234,7 @@ impl Elaborator {
             .map_err(|e| e.unwrap_or_else(identity))
     }
     pub fn infer(&mut self, term: SurfPtr) -> Result<(TermPtr, ValuePtr)> {
-        trace!("inferring type of term {:?}", term);
+        trace!("inferring type of term {}", **term);
         let (term, ty) = match term.data() {
             Surface::Var(name) => {
                 let (lvl, ty) = self
@@ -297,7 +297,7 @@ impl Elaborator {
                 } else {
                     let rhs_ty = self.fresh_meta(with_span(Value::Universe, rhs.span))?;
                     let rhs_ty = self.ctx.env_mut().evaluate(rhs_ty, &self.meta)?;
-                    let name = WithSpan::new(Ustr::from("?x"), rhs_ty.span);
+                    let name = WithSpan::new(Ustr::from("x'"), rhs_ty.span);
                     let rhs_ty_span = rhs_ty.span;
                     let meta = self.with_bind(name, rhs_ty.clone(), |this| {
                         this.fresh_meta(with_span(Value::Universe, rhs_ty_span))
@@ -310,6 +310,7 @@ impl Elaborator {
                     self.unify(virtual_pi, lhs_ty, Error::ExpectedInferredMismatch)?;
                     (rhs_ty, closure)
                 };
+
                 let rhs = self.check(rhs.clone(), rhs_ty)?;
                 let term = with_span(Term::App(lhs, rhs.clone(), icit), term.span);
                 let rhs = self.ctx.env_mut().evaluate(rhs, &self.meta)?;
@@ -365,17 +366,24 @@ impl Elaborator {
                 let term = self.fresh_meta(meta.clone())?;
                 (term, meta)
             }
-            _ => todo!("infer type of term {:?}", term),
         };
 
-        trace!("inferred type of term {:?} as {:?}", term, ty);
+        trace!(
+            "inferred type of term {} as {}",
+            term.with_ctx(&self.ctx),
+            quote(self.ctx.level, ty.clone(), &self.meta)
+                .unwrap()
+                .with_ctx(&self.ctx)
+        );
         Ok((term, ty))
     }
     pub fn check(&mut self, term: SurfPtr, ty: ValuePtr) -> Result<TermPtr> {
         trace!(
-            "checking term {:?} against type {:?}",
-            term,
+            "checking term {} against type {}",
+            **term,
             quote(self.ctx.level, ty.clone(), &self.meta)
+                .unwrap()
+                .with_ctx(&self.ctx)
         );
         let term_span = term.span;
         let ty = self.meta.force(ty)?;
@@ -544,8 +552,10 @@ impl Elaborator {
         value: ValuePtr,
     ) -> Result<()> {
         trace!(
-            "solving meta {meta:?} with right-hand side {:?}",
+            "solving meta {meta:?} with right-hand side {}",
             quote(gamma, value.clone(), &self.meta)
+                .unwrap()
+                .with_ctx(&self.ctx)
         );
         let MetaEntry::Unsolved { ty, blocking } = self.meta.get_meta(meta).clone() else {
             return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
@@ -659,9 +669,13 @@ impl Elaborator {
     fn unify_impl(&mut self, gamma: DBLvl, mut lhs: ValuePtr, mut rhs: ValuePtr) -> Result<()> {
         loop {
             trace!(
-                "unifying {:?} with {:?}",
-                quote(gamma, lhs.clone(), &self.meta),
+                "unifying {} with {}",
+                quote(gamma, lhs.clone(), &self.meta)
+                    .unwrap()
+                    .with_ctx(&self.ctx),
                 quote(gamma, rhs.clone(), &self.meta)
+                    .unwrap()
+                    .with_ctx(&self.ctx)
             );
             lhs = self.meta.force(lhs)?;
             rhs = self.meta.force(rhs)?;
@@ -1009,4 +1023,61 @@ where
     let solution = Environment::new().evaluate(solution_lambda, mctx)?;
     mctx.set_meta(meta, MetaEntry::Solved { val: solution, ty });
     Ok(new_meta)
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use crate::surf::test::*;
+    use crate::utils::DBIdx;
+
+    #[test]
+    fn it_normalizes_app() {
+        _ = tracing_subscriber::fmt::try_init();
+        let identity = lam(["x"], |[x]| x);
+        let fx = lam(["f", "x"], |[f, x]| app(f, [x]));
+        let res = app(fx, [identity]);
+        let ty = term_pi(
+            "T",
+            Icit::Impl,
+            term_universe(),
+            term_pi("", Icit::Expl, term_var(0), term_var(1)),
+        );
+        let mut elaborator = Elaborator::new();
+        let ty = Environment::new().evaluate(ty, &elaborator.meta).unwrap();
+        let term = elaborator.check(res, ty).unwrap();
+        println!("{}", **term);
+    }
+
+    // #[test]
+    // fn it_normalizes_thousand() {
+    //     _ = tracing_subscriber::fmt::try_init();
+    //     let five = lam(["s", "z"], |[s, z]| {
+    //         let one = app(s.clone(), [z]);
+    //         let two = app(s.clone(), [one]);
+    //         let three = app(s.clone(), [two]);
+    //         let four = app(s.clone(), [three]);
+    //         app(s, [four])
+    //     });
+    //     let add = lam(["a", "b", "s", "z"], |[a, b, s, z]| {
+    //         let bsz = app(b, [s.clone(), z]);
+    //         let r#as = app(a, [s]);
+    //         app(r#as, [bsz])
+    //     });
+    //     let mul = lam(["a", "b", "s", "z"], |[a, b, s, z]| {
+    //         let bs = app(b, [s]);
+    //         app(a, [bs, z])
+    //     });
+    //     let ten = app(add, [five.clone(), five]);
+    //     let hundred = app(mul.clone(), [ten.clone(), ten.clone()]);
+    //     let thousand = app(mul, [ten.clone(), hundred]);
+    //     let global = Context::new();
+    //     let env = Environment::new(&global);
+    //
+    //     let res = quote(evaluate(env, thousand), &global);
+    //     let buf = res.to_string();
+    //     println!("{}", buf);
+    //     assert_eq!(buf.chars().filter(|x| *x == 's').count(), 1001);
+    // }
 }

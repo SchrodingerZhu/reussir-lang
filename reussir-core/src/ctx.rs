@@ -14,7 +14,7 @@ use crate::{
 pub struct Context {
     env: Environment,
     pub(crate) level: DBLvl,
-    locals: Vector<(Name, VarKind)>,
+    pub(crate) locals: Vector<(Name, VarKind)>,
     pub(crate) pruning: Pruning,
     name_types: HashTrieMap<Name, (DBLvl, ValuePtr)>,
 }
@@ -97,6 +97,7 @@ impl Context {
                 ty: ty.clone(),
             },
         ));
+        self.pruning.push_back_mut(None);
         if let Some(entry) = self.name_types.get_mut(&name) {
             old = Some(entry.clone());
             *entry = (self.level, vty.clone());
@@ -114,10 +115,12 @@ impl Context {
         }
         self.locals.drop_last_mut();
         self.env.pop_back_mut();
+        self.pruning.drop_last_mut();
     }
     pub fn close_term(&self, term: TermPtr, span: Span) -> TermPtr {
         self.locals
             .iter()
+            .rev()
             .fold(term, |body, (name, kind)| match kind {
                 VarKind::Bound { .. } => with_span(Term::Lambda(*name, Icit::Expl, body), span),
                 VarKind::Defined { term, ty } => with_span(
@@ -134,6 +137,7 @@ impl Context {
     pub fn close_type(&self, ty: TermPtr, span: Span) -> TermPtr {
         self.locals
             .iter()
+            .rev()
             .fold(ty, |body, (name, kind)| match kind {
                 VarKind::Bound { ty } => {
                     with_span(Term::Pi(*name, Icit::Expl, ty.clone(), body), span)

@@ -1,15 +1,15 @@
+use rpds::Vector;
+use std::fmt::{Debug, Display};
 use std::{
     cell::RefCell,
     ops::Deref,
     rc::{Rc, UniqueRc},
 };
-use std::fmt::Display;
-use rpds::Vector;
 use ustr::Ustr;
 
 use crate::{Result, eval::Environment, meta::MetaContext, term::TermPtr, value::ValuePtr};
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct WithSpan<T> {
     data: T,
     pub span: Span,
@@ -18,6 +18,12 @@ pub struct WithSpan<T> {
 impl<T: PartialEq> PartialEq for WithSpan<T> {
     fn eq(&self, other: &Self) -> bool {
         self.data == other.data
+    }
+}
+
+impl<T: Debug> Debug for WithSpan<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.data)
     }
 }
 
@@ -63,6 +69,9 @@ impl DBIdx {
     pub fn next(self) -> Self {
         Self(self.0 + 1)
     }
+    pub fn prev(self) -> Self {
+        Self(self.0.saturating_sub(1))
+    }
     pub fn to_level(self, env_len: usize) -> DBLvl {
         DBLvl(env_len - self.0 - 1)
     }
@@ -78,6 +87,9 @@ impl DBLvl {
     }
     pub fn next(self) -> Self {
         Self(self.0 + 1)
+    }
+    pub fn prev(self) -> Self {
+        Self(self.0.saturating_sub(1))
     }
     pub fn to_index(self, level: Self) -> DBIdx {
         DBIdx(level.0 - self.0 - 1)
@@ -158,12 +170,16 @@ pub fn deep_recursive<R>(f: impl FnOnce() -> R) -> R {
 
 impl Display for DBLvl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const ENG_LETTER : &'static str = "abcdefghijklmnopqrstuvwxyz";
+        const ENG_LETTER: &'static str = "abcdefghijklmnopqrstuvwxyz";
         const GREEK_LETTER: &'static str = "αβγδεζηθικλμνξοπρστυφχψως";
         if self.0 < ENG_LETTER.len() {
             write!(f, "{}", ENG_LETTER.chars().nth(self.0).unwrap())
         } else if self.0 < ENG_LETTER.len() + GREEK_LETTER.len() {
-            write!(f, "{}", GREEK_LETTER.chars().nth(self.0 - ENG_LETTER.len()).unwrap())
+            write!(
+                f,
+                "{}",
+                GREEK_LETTER.chars().nth(self.0 - ENG_LETTER.len()).unwrap()
+            )
         } else {
             write!(f, "${}", self.0)
         }

@@ -18,7 +18,7 @@ pub struct CheckVar(pub(crate) usize);
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct MetaVar(usize);
+pub struct MetaVar(pub(crate) usize);
 
 #[derive(Debug, Clone)]
 pub enum CheckEntry {
