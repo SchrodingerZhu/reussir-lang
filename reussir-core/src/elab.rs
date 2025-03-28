@@ -36,7 +36,7 @@ pub enum Error {
     SolvedMeta,
     #[error("meta variable occurs in its own solution")]
     OccursCheck,
-    #[error("unsupported unification pattern")]
+    #[error("unsupported")]
     Unsupported,
     #[error("escaping rigid variable")]
     EscapingRigid,
@@ -163,8 +163,8 @@ impl Elaborator {
     fn fresh_meta(&mut self, ty: ValuePtr) -> Result<TermPtr> {
         let span = ty.span;
         let closed_ty = self.evaluated_close_type(ty, span)?;
-        let mvar = self.meta.new_meta(closed_ty, Default::default());
-        trace!("introduced new meta variable ?{}", mvar.0);
+        let mvar = self.meta.new_meta(closed_ty.clone(), Default::default());
+        trace!("introduced new meta variable ?{} with type {}", mvar.0, **quote(self.ctx.level, closed_ty.clone(), &self.meta).unwrap());
         let mvar = with_span(Term::Meta(mvar), span);
         let term = Term::AppPruning(mvar, self.ctx.pruning.clone());
         Ok(with_span(term, span))
@@ -224,7 +224,10 @@ impl Elaborator {
     pub fn unify(&mut self, lhs: ValuePtr, rhs: ValuePtr, err: Error) -> Result<()> {
         self.unify_impl(self.ctx.level, lhs.clone(), rhs.clone())
             .inspect_err(|e| {
-                trace!("failed to unify {lhs:?} with {rhs:?} ({e})");
+                trace!("failed to unify {} with {} ({e})",
+                    quote(self.ctx.level, lhs.clone(), &self.meta).unwrap().with_ctx(&self.ctx),
+                    quote(self.ctx.level, rhs.clone(), &self.meta).unwrap().with_ctx(&self.ctx)
+                );
             })
             .map_err(|_| {
                 let lhs = quote(self.ctx.level, lhs, &self.meta)?;
@@ -302,7 +305,7 @@ impl Elaborator {
                     let meta = self.with_bind(name, rhs_ty.clone(), |this| {
                         this.fresh_meta(with_span(Value::Universe, rhs_ty_span))
                     })?;
-                    let closure = Closure::new(Environment::new(), meta.clone());
+                    let closure = Closure::new(self.ctx.env_mut().clone(), meta.clone());
                     let virtual_pi = with_span(
                         Value::Pi(name, icit, rhs_ty.clone(), closure.clone()),
                         lhs_ty.span,
@@ -552,14 +555,21 @@ impl Elaborator {
         value: ValuePtr,
     ) -> Result<()> {
         trace!(
-            "solving meta {meta:?} with right-hand side {}",
+            "solving meta ?{} with right-hand side {}",
+            meta.0,
             quote(gamma, value.clone(), &self.meta)
                 .unwrap()
                 .with_ctx(&self.ctx)
         );
-        let MetaEntry::Unsolved { ty, blocking } = self.meta.get_meta(meta).clone() else {
+        let MetaEntry::Unsolved { mut ty, blocking } = self.meta.get_meta(meta).clone() else {
             return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
         };
+        trace!(
+            "target meta type: {}",
+            **quote(gamma, ty.clone(), &self.meta)
+                .unwrap()
+        );
+
         if let Some(pruning) = pruning {
             prune_type(pruning.iter().rev().copied(), ty.clone(), &mut self.meta)?;
         }
@@ -574,7 +584,6 @@ impl Elaborator {
             for i in blocking.iter().cloned() {
                 self.retry_check(i)?;
             }
-
             Ok(())
         })
     }
@@ -668,6 +677,8 @@ impl Elaborator {
 
     fn unify_impl(&mut self, gamma: DBLvl, mut lhs: ValuePtr, mut rhs: ValuePtr) -> Result<()> {
         loop {
+            lhs = self.meta.force(lhs)?;
+            rhs = self.meta.force(rhs)?;
             trace!(
                 "unifying {} with {}",
                 quote(gamma, lhs.clone(), &self.meta)
@@ -677,8 +688,6 @@ impl Elaborator {
                     .unwrap()
                     .with_ctx(&self.ctx)
             );
-            lhs = self.meta.force(lhs)?;
-            rhs = self.meta.force(rhs)?;
             match (lhs.data(), rhs.data()) {
                 (Value::Universe, Value::Universe) => return Ok(()),
                 (Value::Pi(x, i, a, b), Value::Pi(_, j, c, d)) if i == j => {
@@ -900,7 +909,6 @@ impl PartialRenaming {
                     } else if matches!(state, PruneState::NonRenaming) {
                         return Err(crate::Error::InvalidUnification(Error::Unsupported));
                     } else {
-                        trace!("pruning variable");
                         sp.push(None);
                         state = PruneState::NeedsPruning;
                     }
@@ -943,7 +951,6 @@ fn stack_lambdas(
     let mut result = TERM_PLACEHOLDER.with(|hole| hole.clone());
     let mut cursor = &mut result;
     while current != level {
-        current = current.next();
         ty = mctx.force(ty.clone())?;
         if let Value::Pi(x, icit, _, closure) = ty.data() {
             let x = if x.is_anon() {
@@ -961,6 +968,10 @@ fn stack_lambdas(
             };
             cursor = body;
         } else {
+            trace!(
+                "expected pi type during stacking lambda, found {}",
+                **quote(current, ty.clone(), mctx).unwrap(),
+            );
             return Err(crate::Error::InvalidUnification(Error::Unsupported));
         }
         current = current.next();
@@ -1006,20 +1017,34 @@ fn prune_meta<I>(pruning: I, meta: MetaVar, mctx: &mut MetaContext) -> Result<Me
 where
     I: Iterator<Item = Option<Icit>> + Clone + ExactSizeIterator + DoubleEndedIterator,
 {
+    trace!(
+        "pruning meta ?{} with {}",
+        meta.0,
+        pruning
+            .clone()
+            .map(|x| x.map(|i| i.to_string()).unwrap_or_else(|| "none".to_string()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let MetaEntry::Unsolved { ty, blocking } = mctx.get_meta(meta).clone() else {
         return Err(crate::Error::InvalidUnification(Error::SolvedMeta));
     };
     let len = pruning.len();
-    let pruned_ty = prune_type(pruning.clone().rev(), ty.clone(), mctx)?;
-    let pruned_ty = Environment::new().evaluate(pruned_ty, mctx)?;
+    let term_type = prune_type(pruning.clone().rev(), ty.clone(), mctx)?;
+    let pruned_ty = Environment::new().evaluate(term_type.clone(), mctx)?;
     let span = pruned_ty.span;
     let new_meta = mctx.new_meta(pruned_ty, blocking);
+    trace!("new meta ?{} introduced with type {}",
+        new_meta.0,
+        **term_type
+    );
     let solution_body = with_span(
         Term::AppPruning(with_span(Term::Meta(new_meta), span), pruning.collect()),
         Span::default(),
     );
     let solution_lvl = DBLvl(len);
     let solution_lambda = stack_lambdas(solution_lvl, ty.clone(), solution_body, mctx)?;
+    trace!("after pruning, solution is {}", **solution_lambda);
     let solution = Environment::new().evaluate(solution_lambda, mctx)?;
     mctx.set_meta(meta, MetaEntry::Solved { val: solution, ty });
     Ok(new_meta)

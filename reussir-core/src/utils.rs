@@ -128,6 +128,20 @@ pub struct Closure {
     body: TermPtr,
 }
 
+impl Display for Closure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<[")?;
+        for i in self.env.borrow().iter().enumerate() {
+            if i.0 > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", ***i.1)?;
+        }
+        write!(f, "], {}>", self.body.data())?;
+        Ok(())
+    }
+}
+
 pub fn empty_spine() -> Spine {
     thread_local! {
         static EMPTY_SPINE: Spine = Vector::new();

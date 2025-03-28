@@ -1,5 +1,5 @@
 use rpds::{HashTrieMap, Vector};
-
+use tracing::trace;
 use crate::utils::Closure;
 use crate::{
     Result,
@@ -135,7 +135,7 @@ impl Context {
             })
     }
     pub fn close_type(&self, ty: TermPtr, span: Span) -> TermPtr {
-        self.locals
+        let res = self.locals
             .iter()
             .rev()
             .fold(ty, |body, (name, kind)| match kind {
@@ -151,7 +151,8 @@ impl Context {
                     },
                     span,
                 ),
-            })
+            });
+        res
     }
     pub fn lookup(&self, name: Name) -> Option<&(DBLvl, ValuePtr)> {
         self.name_types.get(&name)

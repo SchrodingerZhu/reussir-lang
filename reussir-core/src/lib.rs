@@ -21,7 +21,7 @@ pub enum Error {
     UnificationFailure(TermPtr, TermPtr, elab::Error),
     #[error("icitness mismatch: expected {0}, got {1}")]
     IcitMismatch(utils::Icit, utils::Icit),
-    #[error("invalid unification pattern {0}")]
+    #[error("invalid unification pattern: {0}")]
     InvalidUnification(elab::Error),
     #[error("named implicit argument ({}) is not found", .0.data())]
     NamedImplicitNotFound(Name),

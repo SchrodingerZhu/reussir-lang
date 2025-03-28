@@ -52,6 +52,9 @@ impl Environment {
             .cloned()
             .expect("Variable not found in environment")
     }
+    pub fn iter(&self) -> impl Iterator<Item = &ValuePtr> + '_ {
+        self.0.iter()
+    }
     pub fn evaluate(&mut self, term: TermPtr, meta: &MetaContext) -> Result<ValuePtr> {
         match term.data() {
             Term::Var(idx) => Ok(self.get_var(*idx)),
